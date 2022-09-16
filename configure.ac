@@ -474,13 +474,11 @@ doc/Makefile
 doc/doxygen.conf
 doc/pcscd.8
 doc/reader.conf.5
-doc/example/Makefile
 etc/Makefile
 src/Makefile
 src/libpcsclite.pc
 src/pcscd.h
 src/PCSC/pcsclite.h
-src/spy/Makefile
 ])
 AC_OUTPUT
 
