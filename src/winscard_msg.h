@@ -5,7 +5,7 @@
  *  David Corcoran <corcoran@musclecard.com>
  * Copyright (C) 2003-2004
  *  Damien Sauveron <damien.sauveron@labri.fr>
- * Copyright (C) 2002-2010
+ * Copyright (C) 2002-2025
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -49,7 +49,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 /** Major version of the current message protocol */
 #define PROTOCOL_VERSION_MAJOR 4
 /** Minor version of the current message protocol */
-#define PROTOCOL_VERSION_MINOR 4
+#define PROTOCOL_VERSION_MINOR 5
+/** Minor version the client also supports */
+#define PROTOCOL_VERSION_MINOR_CLIENT_BACKWARD 4
+/** Minor version the server also supports */
+#define PROTOCOL_VERSION_MINOR_SERVER_BACKWARD 4
 
 	/**
 	 * @brief Information transmitted in \ref CMD_VERSION Messages.
@@ -96,6 +100,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 		CMD_GET_READERS_STATE = 0x12,	/**< get the readers state */
 		CMD_WAIT_READER_STATE_CHANGE = 0x13,	/**< wait for a reader state change */
 		CMD_STOP_WAITING_READER_STATE_CHANGE = 0x14,	/**< stop waiting for a reader state change */
+		CMD_GET_READER_EVENTS = 0x15,	/**< get the number of reader events */
 		CMD_ENUM_LAST
 	};
 
@@ -267,6 +272,12 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 		uint32_t dwAttrId;
 		uint8_t pbAttr[MAX_BUFFER_SIZE];
 		uint32_t cbAttrLen;
+		uint32_t rv;
+	};
+
+	struct get_reader_events
+	{
+		uint32_t readerEvents;
 		uint32_t rv;
 	};
 

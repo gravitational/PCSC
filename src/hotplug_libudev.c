@@ -1,7 +1,7 @@
 /*
  * MUSCLE SmartCard Development ( https://pcsclite.apdu.fr/ )
  *
- * Copyright (C) 2011
+ * Copyright (C) 2011-2026
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  * Copyright (C) 2014
  *  Stefani Seibold <stefani@seibold.net>
@@ -32,7 +32,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 /**
  * @file
- * @brief This provides a search API for hot plugable devices using libudev
+ * @brief This provides a search API for hot pluggable devices using libudev
  */
 
 #include "config.h"
@@ -47,6 +47,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <libudev.h>
 #include <poll.h>
 #include <ctype.h>
+#include <stdbool.h>
 
 #include "debuglog.h"
 #include "parser.h"
@@ -66,15 +67,13 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #undef DEBUG_HOTPLUG
 
-#define FALSE			0
-#define TRUE			1
-
-extern char Add_Interface_In_Name;
-extern char Add_Serial_In_Name;
+extern bool Add_Interface_In_Name;
+extern bool Add_Serial_In_Name;
 
 static pthread_t usbNotifyThread;
 static int driverSize = -1;
 static struct udev *Udev;
+static struct udev_monitor *Udev_monitor;
 
 
 /**
@@ -107,7 +106,7 @@ static struct _readerTracker
 } readerTracker[PCSCLITE_MAX_READERS_CONTEXTS];
 
 
-static LONG HPReadBundleValues(void)
+static LONG HPReadBundleValues(const char * hpDirPath)
 {
 	LONG rv;
 	DIR *hpDir;
@@ -116,13 +115,13 @@ static LONG HPReadBundleValues(void)
 	char fullLibPath[FILENAME_MAX];
 	int listCount = 0;
 
-	hpDir = opendir(PCSCLITE_HP_DROPDIR);
+	hpDir = opendir(hpDirPath);
 
 	if (NULL == hpDir)
 	{
-		Log1(PCSC_LOG_ERROR, "Cannot open PC/SC drivers directory: " PCSCLITE_HP_DROPDIR);
+		Log2(PCSC_LOG_ERROR, "Cannot open PC/SC drivers directory: %s", hpDirPath);
 		Log1(PCSC_LOG_ERROR, "Disabling USB support for pcscd.");
-		return -1;
+		return 0;
 	}
 
 	/* allocate a first array */
@@ -159,7 +158,7 @@ static LONG HPReadBundleValues(void)
 			 * vendor and product ID's for this particular bundle
 			 */
 			(void)snprintf(fullPath, sizeof(fullPath), "%s/%s/Contents/Info.plist",
-				PCSCLITE_HP_DROPDIR, currFP->d_name);
+				hpDirPath, currFP->d_name);
 			fullPath[sizeof(fullPath) - 1] = '\0';
 
 			rv = bundleParse(fullPath, &plist);
@@ -171,7 +170,7 @@ static LONG HPReadBundleValues(void)
 			libraryPath = list_get_at(values, 0);
 			(void)snprintf(fullLibPath, sizeof(fullLibPath),
 				"%s/%s/Contents/%s/%s",
-				PCSCLITE_HP_DROPDIR, currFP->d_name, PCSC_ARCH,
+				hpDirPath, currFP->d_name, PCSC_ARCH,
 				libraryPath);
 			fullLibPath[sizeof(fullLibPath) - 1] = '\0';
 
@@ -193,7 +192,7 @@ static LONG HPReadBundleValues(void)
 			if (rv)
 				CFBundleName = NULL;
 			else
-				CFBundleName = strdup(list_get_at(values, 0));
+				CFBundleName = list_get_at(values, 0);
 
 			/* while we find a nth ifdVendorID in Info.plist */
 			for (alias=0; alias<list_size(manuIDs); alias++)
@@ -212,7 +211,7 @@ static LONG HPReadBundleValues(void)
 				/* constant entries for a same driver */
 				driverTracker[listCount].bundleName = strdup(currFP->d_name);
 				driverTracker[listCount].libraryPath = strdup(fullLibPath);
-				driverTracker[listCount].CFBundleName = CFBundleName;
+				driverTracker[listCount].CFBundleName = CFBundleName ?  strdup(CFBundleName) : NULL;
 
 #ifdef DEBUG_HOTPLUG
 				Log2(PCSC_LOG_INFO, "Found driver for: %s",
@@ -374,6 +373,7 @@ static void HPAddDevice(struct udev_device *dev)
 	const char *devpath;
 	struct udev_device *parent;
 	const char *sysname;
+	const char *ignoreprop;
 
 	/* The device pointed to by dev contains information about
 	   the interface. In order to get information about the USB
@@ -388,7 +388,7 @@ static void HPAddDevice(struct udev_device *dev)
 	devpath = udev_device_get_devnode(parent);
 	if (!devpath)
 	{
-		/* the device disapeared? */
+		/* the device disappeared? */
 		Log1(PCSC_LOG_ERROR, "udev_device_get_devnode() failed");
 		return;
 	}
@@ -408,6 +408,15 @@ static void HPAddDevice(struct udev_device *dev)
 	if (!sysname)
 	{
 		Log1(PCSC_LOG_ERROR, "udev_device_get_sysname() failed");
+		return;
+	}
+
+	ignoreprop = udev_device_get_property_value(parent, "PCSCLITE_IGNORE");
+	if (ignoreprop && !strcmp(ignoreprop, "1"))
+	{
+		Log4(PCSC_LOG_ERROR,
+			"Device %s at %s (%s) has PCSCLITE_IGNORE set: ignored",
+			driver->readerName, devpath, sysname);
 		return;
 	}
 
@@ -661,7 +670,7 @@ static void * HPEstablishUSBNotifications(void *arg)
 /***
  * Start a thread waiting for hotplug events
  */
-LONG HPSearchHotPluggables(void)
+LONG HPSearchHotPluggables(const char * hpDirPath)
 {
 	int i;
 
@@ -672,7 +681,7 @@ LONG HPSearchHotPluggables(void)
 		readerTracker[i].sysname = NULL;
 	}
 
-	return HPReadBundleValues();
+	return HPReadBundleValues(hpDirPath);
 } /* HPSearchHotPluggables */
 
 
@@ -698,10 +707,12 @@ LONG HPStopHotPluggables(void)
 		free(driverTracker[i].bundleName);
 		free(driverTracker[i].libraryPath);
 		free(driverTracker[i].readerName);
+		free(driverTracker[i].CFBundleName);
 	}
 	free(driverTracker);
 
 	udev_unref(Udev);
+	udev_monitor_unref(Udev_monitor);
 
 	Udev = NULL;
 	driverSize = -1;
@@ -714,15 +725,15 @@ LONG HPStopHotPluggables(void)
 /**
  * Sets up callbacks for device hotplug events.
  */
-ULONG HPRegisterForHotplugEvents(void)
+ULONG HPRegisterForHotplugEvents(const char * hpDirPath)
 {
-	struct udev_monitor *udev_monitor;
 	int r;
 
 	if (driverSize <= 0)
 	{
-		Log1(PCSC_LOG_INFO, "No bundle files in pcsc drivers directory: "
-			PCSCLITE_HP_DROPDIR);
+		(void)hpDirPath;
+		Log2(PCSC_LOG_INFO, "No bundle files in pcsc drivers directory: %s",
+			hpDirPath);
 		Log1(PCSC_LOG_INFO, "Disabling USB support for pcscd");
 		return 0;
 	}
@@ -735,15 +746,15 @@ ULONG HPRegisterForHotplugEvents(void)
 		return SCARD_F_INTERNAL_ERROR;
 	}
 
-	udev_monitor = udev_monitor_new_from_netlink(Udev, "udev");
-	if (NULL == udev_monitor)
+	Udev_monitor = udev_monitor_new_from_netlink(Udev, "udev");
+	if (NULL == Udev_monitor)
 	{
 		Log1(PCSC_LOG_ERROR, "udev_monitor_new_from_netlink() error");
 		pthread_exit(NULL);
 	}
 
 	/* filter only the interfaces */
-	r = udev_monitor_filter_add_match_subsystem_devtype(udev_monitor, "usb",
+	r = udev_monitor_filter_add_match_subsystem_devtype(Udev_monitor, "usb",
 		"usb_interface");
 	if (r)
 	{
@@ -751,7 +762,7 @@ ULONG HPRegisterForHotplugEvents(void)
 		pthread_exit(NULL);
 	}
 
-	r = udev_monitor_enable_receiving(udev_monitor);
+	r = udev_monitor_enable_receiving(Udev_monitor);
 	if (r)
 	{
 		Log2(PCSC_LOG_ERROR, "udev_monitor_enable_receiving() error: %d\n", r);
@@ -762,7 +773,7 @@ ULONG HPRegisterForHotplugEvents(void)
 	HPScanUSB(Udev);
 
 	if (ThreadCreate(&usbNotifyThread, 0,
-		(PCSCLITE_THREAD_FUNCTION( )) HPEstablishUSBNotifications, udev_monitor))
+		(PCSCLITE_THREAD_FUNCTION( )) HPEstablishUSBNotifications, Udev_monitor))
 	{
 		Log1(PCSC_LOG_ERROR, "ThreadCreate() failed");
 		return SCARD_F_INTERNAL_ERROR;
@@ -778,6 +789,10 @@ void HPReCheckSerialReaders(void)
 #ifdef DEBUG_HOTPLUG
 	Log0(PCSC_LOG_ERROR);
 #endif
+
+	/* re-scan the USB bus */
+	HPScanUSB(Udev);
+
 } /* HPReCheckSerialReaders */
 
 #endif

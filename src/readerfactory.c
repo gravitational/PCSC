@@ -5,7 +5,7 @@
  *  David Corcoran <corcoran@musclecard.com>
  * Copyright (C) 2003-2004
  *  Damien Sauveron <damien.sauveron@labri.fr>
- * Copyright (C) 2002-2011
+ * Copyright (C) 2002-2024
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  * Copyright (C) 2009
  *  Jean-Luc Giraud <jlgiraud@googlemail.com>
@@ -49,10 +49,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
-#ifdef HAVE_ALLOCA_H
-#include <alloca.h>
-#endif
 #include <stdatomic.h>
+#include <stdbool.h>
 
 #include "misc.h"
 #include "pcscd.h"
@@ -66,11 +64,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "configfile.h"
 #include "utils.h"
 
-#ifndef TRUE
-#define TRUE 1
-#define FALSE 0
-#endif
-
 static READER_CONTEXT * sReadersContexts[PCSCLITE_MAX_READERS_CONTEXTS];
 READER_STATE readerStates[PCSCLITE_MAX_READERS_CONTEXTS];
 static int maxReaderHandles = PCSC_MAX_READER_HANDLES;
@@ -80,8 +73,8 @@ static char *ConfigFile = NULL;
 static int ConfigFileCRC = 0;
 #endif
 static pthread_mutex_t LockMutex = PTHREAD_MUTEX_INITIALIZER;
+int16_t ReaderEvents = 1;
 
-#define IDENTITY_SHIFT 16
 static LONG removeReader(READER_CONTEXT * sReader);
 
 static int RDR_CLIHANDLES_seeker(const void *el, const void *key)
@@ -172,7 +165,7 @@ LONG RFAddReader(const char *readerNameLong, int port, const char *library,
 		return SCARD_E_INVALID_VALUE;
 
 #ifdef FILTER_NAMES
-	const char *ro_filter = getenv("PCSCLITE_FILTER_IGNORE_READER_NAMES");
+	const char *ro_filter = SYS_GetEnv("PCSCLITE_FILTER_IGNORE_READER_NAMES");
 	if (ro_filter)
 	{
 		char *filter, *next;
@@ -407,6 +400,12 @@ LONG RFAddReader(const char *readerNameLong, int port, const char *library,
 		}
 	}
 
+	/* we have one more reader */
+	ReaderEvents++;
+	/* wrap? */
+	if (ReaderEvents < 0)
+		ReaderEvents = 1;
+
 	/* Call on the driver to see if there are multiple slots */
 	dwGetSize = sizeof(ucGetData);
 	rv = IFDGetCapabilities((sReadersContexts[dwContext]),
@@ -588,7 +587,7 @@ LONG RFRemoveReader(const char *readerName, int port, int flags)
 		return SCARD_E_INVALID_VALUE;
 
 #ifdef FILTER_NAMES
-	extend = getenv("PCSCLITE_FILTER_EXTEND_READER_NAMES");
+	extend = SYS_GetEnv("PCSCLITE_FILTER_EXTEND_READER_NAMES");
 	if (extend)
 		extend_size = strlen(extend);
 #endif
@@ -629,6 +628,12 @@ LONG RFRemoveReader(const char *readerName, int port, int flags)
 			}
 		}
 	}
+
+	/* we have one less reader */
+	ReaderEvents++;
+	/* wrap? */
+	if (ReaderEvents < 0)
+		ReaderEvents = 1;
 
 	return SCARD_S_SUCCESS;
 }
@@ -712,13 +717,13 @@ LONG RFSetReaderName(READER_CONTEXT * rContext, const char *readerName,
 	DWORD valueLength;
 	int currentDigit = -1;
 	int supportedChannels = 0;
-	int usedDigits[PCSCLITE_MAX_READERS_CONTEXTS];
+	bool usedDigits[PCSCLITE_MAX_READERS_CONTEXTS];
 	int i;
 	const char *extend = "";
 
 	/* Clear the list */
 	for (i = 0; i < PCSCLITE_MAX_READERS_CONTEXTS; i++)
-		usedDigits[i] = FALSE;
+		usedDigits[i] = false;
 
 	if (dwNumReadersContexts != 0)
 	{
@@ -770,7 +775,7 @@ LONG RFSetReaderName(READER_CONTEXT * rContext, const char *readerName,
 						currentDigit = strtol(reader + strlen(reader) - 5, NULL, 16);
 
 						/* This spot is taken */
-						usedDigits[currentDigit] = TRUE;
+						usedDigits[currentDigit] = true;
 					}
 				}
 			}
@@ -786,7 +791,7 @@ LONG RFSetReaderName(READER_CONTEXT * rContext, const char *readerName,
 		for (i = 0; i < PCSCLITE_MAX_READERS_CONTEXTS; i++)
 		{
 			/* get the first free digit */
-			if (usedDigits[i] == FALSE)
+			if (usedDigits[i] == false)
 				break;
 		}
 
@@ -806,7 +811,7 @@ LONG RFSetReaderName(READER_CONTEXT * rContext, const char *readerName,
 	}
 
 #ifdef FILTER_NAMES
-	extend = getenv("PCSCLITE_FILTER_EXTEND_READER_NAMES");
+	extend = SYS_GetEnv("PCSCLITE_FILTER_EXTEND_READER_NAMES");
 	if (NULL == extend)
 		extend = "";
 #endif
@@ -876,6 +881,7 @@ LONG RFReaderInfoById(SCARDHANDLE hCard, READER_CONTEXT * * sReader)
 
 LONG RFLoadReader(READER_CONTEXT * rContext)
 {
+	LONG ret = SCARD_S_SUCCESS;
 	if (rContext->vHandle != 0)
 	{
 		Log2(PCSC_LOG_INFO, "Reusing already loaded driver for %s",
@@ -884,7 +890,10 @@ LONG RFLoadReader(READER_CONTEXT * rContext)
 		return SCARD_S_SUCCESS;
 	}
 
-	return DYN_LoadLibrary(&rContext->vHandle, rContext->library);
+	rContext->vHandle = DYN_LoadLibrary(rContext->library);
+	if (NULL == rContext->vHandle)
+		ret = SCARD_F_UNKNOWN_ERROR;
+	return ret;
 }
 
 LONG RFBindFunctions(READER_CONTEXT * rContext)
@@ -892,7 +901,7 @@ LONG RFBindFunctions(READER_CONTEXT * rContext)
 	int rv;
 	void *f;
 
-	rv = DYN_GetAddress(rContext->vHandle, &f, "IFDHCreateChannelByName", TRUE);
+	rv = DYN_GetAddress(rContext->vHandle, &f, "IFDHCreateChannelByName", true);
 	if (SCARD_S_SUCCESS == rv)
 	{
 		/* Ifd Handler 3.0 found */
@@ -900,7 +909,7 @@ LONG RFBindFunctions(READER_CONTEXT * rContext)
 	}
 	else
 	{
-		rv = DYN_GetAddress(rContext->vHandle, &f, "IFDHCreateChannel", FALSE);
+		rv = DYN_GetAddress(rContext->vHandle, &f, "IFDHCreateChannel", false);
 		if (SCARD_S_SUCCESS == rv)
 		{
 			/* Ifd Handler 2.0 found */
@@ -920,7 +929,7 @@ LONG RFBindFunctions(READER_CONTEXT * rContext)
 #define GET_ADDRESS_OPTIONALv2(s, code) \
 { \
 	void *f1 = NULL; \
-	int rvl = DYN_GetAddress(rContext->vHandle, &f1, "IFDH" #s, FALSE); \
+	int rvl = DYN_GetAddress(rContext->vHandle, &f1, "IFDH" #s, false); \
 	if (SCARD_S_SUCCESS != rvl) \
 	{ \
 		code \
@@ -952,7 +961,7 @@ LONG RFBindFunctions(READER_CONTEXT * rContext)
 #define GET_ADDRESS_OPTIONALv3(s, code) \
 { \
 	void *f1 = NULL; \
-	int rvl = DYN_GetAddress(rContext->vHandle, &f1, "IFDH" #s, FALSE); \
+	int rvl = DYN_GetAddress(rContext->vHandle, &f1, "IFDH" #s, false); \
 	if (SCARD_S_SUCCESS != rvl) \
 	{ \
 		code \
@@ -981,7 +990,7 @@ LONG RFBindFunctions(READER_CONTEXT * rContext)
 	}
 	else
 	{
-		/* Who knows what could have happenned for it to get here. */
+		/* Who knows what could have happened for it to get here. */
 		Log1(PCSC_LOG_CRITICAL, "IFD Handler not 1.0/2.0 or 3.0");
 		return SCARD_F_UNKNOWN_ERROR;
 	}
@@ -1003,7 +1012,8 @@ LONG RFUnloadReader(READER_CONTEXT * rContext)
 	if (*rContext->pFeeds == 1)
 	{
 		Log1(PCSC_LOG_INFO, "Unloading reader driver.");
-		(void)DYN_CloseLibrary(&rContext->vHandle);
+		(void)DYN_CloseLibrary(rContext->vHandle);
+		rContext->vHandle = NULL;
 	}
 
 	rContext->vHandle = NULL;
@@ -1163,6 +1173,7 @@ void RFUnInitializeReader(READER_CONTEXT * rContext)
 	memset(rContext->readerState->cardAtr, 0,
 		sizeof(rContext->readerState->cardAtr));
 	rContext->readerState->readerState = 0;
+	rContext->readerState->eventCounter = 0;
 	rContext->readerState->readerSharing = 0;
 	rContext->readerState->cardAtrLength = READER_NOT_INITIALIZED;
 	rContext->readerState->cardProtocol = SCARD_PROTOCOL_UNDEFINED;
@@ -1418,15 +1429,15 @@ void RFCleanupReaders(void)
 #ifdef USE_USB
 void RFWaitForReaderInit(void)
 {
-	int i, need_to_wait;
+	bool need_to_wait;
 
 	do
 	{
-		need_to_wait = FALSE;
-		for (i = 0; i < PCSCLITE_MAX_READERS_CONTEXTS; i++)
+		need_to_wait = false;
+		for (int i = 0; i < PCSCLITE_MAX_READERS_CONTEXTS; i++)
 		{
 			/* reader is present */
-			if (sReadersContexts[i]->vHandle != NULL)
+			if (sReadersContexts[i] && sReadersContexts[i]->vHandle != NULL)
 			{
 				/* but card state is not yet available */
 				if (READER_NOT_INITIALIZED
@@ -1434,7 +1445,7 @@ void RFWaitForReaderInit(void)
 				{
 					Log2(PCSC_LOG_DEBUG, "Waiting init for reader: %s",
 						sReadersContexts[i]->readerState->readerName);
-					need_to_wait = TRUE;
+					need_to_wait = true;
 				}
 			}
 		}
@@ -1523,7 +1534,7 @@ void RFReCheckReaderConf(void)
 	for (i=0; reader_list[i].pcFriendlyname; i++)
 	{
 		int r;
-		char present = FALSE;
+		char present = false;
 
 		Log2(PCSC_LOG_DEBUG, "refresh reader: %s",
 			reader_list[i].pcFriendlyname);
@@ -1549,7 +1560,7 @@ void RFReCheckReaderConf(void)
 					DWORD dwStatus = 0;
 
 					/* the reader was already started */
-					present = TRUE;
+					present = true;
 
 					/* verify the reader is still connected */
 					if (IFDStatusICC(sReadersContexts[r], &dwStatus)

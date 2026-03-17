@@ -3,7 +3,7 @@
  *
  * Copyright (C) 1999
  *  David Corcoran <corcoran@musclecard.com>
- * Copyright (C) 2002-2009
+ * Copyright (C) 2002-2024
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -38,10 +38,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #ifndef __dyn_generic_h__
 #define __dyn_generic_h__
 
+#include <stdbool.h>
 #include "wintypes.h"
 
-	LONG DYN_LoadLibrary(void **, char *);
-	LONG DYN_CloseLibrary(void **);
-	LONG DYN_GetAddress(void *, /*@out@*/ void **, const char *, int);
+	void * DYN_LoadLibrary(const char *);
+	LONG DYN_CloseLibrary(void *);
+	LONG DYN_GetAddress(void *, /*@out@*/ void **, const char *, bool);
 
 #endif

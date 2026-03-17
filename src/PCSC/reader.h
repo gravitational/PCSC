@@ -3,7 +3,7 @@
  *
  * Copyright (C) 1999-2005
  *  David Corcoran <corcoran@musclecard.com>
- * Copyright (C) 2005-2009
+ * Copyright (C) 2005-2023
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -148,7 +148,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <inttypes.h>
 
-/* Set structure elements aligment on bytes
+/* Set structure elements alignment on bytes
  * http://gcc.gnu.org/onlinedocs/gcc/Structure_002dPacking-Pragmas.html */
 #if defined(__APPLE__) || defined(sun) || defined(__NetBSD__)
 #pragma pack(1)

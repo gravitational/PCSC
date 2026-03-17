@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2001-2004
  *  David Corcoran <corcoran@musclecard.com>
- * Copyright (C) 2003-2011
+ * Copyright (C) 2003-2026
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  * Copyright (C) 2003
  *  Toni Andjelkovic <toni@soth.at>
@@ -55,6 +55,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <libusb.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdbool.h>
 
 #include "misc.h"
 #include "wintypes.h"
@@ -76,11 +77,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define READER_PRESENT		1
 #define READER_FAILED		2
 
-#define FALSE			0
-#define TRUE			1
-
-extern char Add_Interface_In_Name;
-extern char Add_Serial_In_Name;
+extern bool Add_Interface_In_Name;
+extern bool Add_Serial_In_Name;
 
 /* we use the default libusb context */
 #define ctx NULL
@@ -89,7 +87,7 @@ pthread_mutex_t usbNotifierMutex;
 
 static pthread_t usbNotifyThread;
 static int driverSize = -1;
-static char AraKiriHotPlug = FALSE;
+static bool AraKiriHotPlug = false;
 static int rescan_pipe[] = { -1, -1 };
 extern int HPForceReaderPolling;
 
@@ -131,7 +129,7 @@ static LONG HPAddHotPluggable(struct libusb_device *dev,
 static LONG HPRemoveHotPluggable(int reader_index);
 static void HPCleanupHotPluggable(int reader_index);
 
-static LONG HPReadBundleValues(void)
+static LONG HPReadBundleValues(const char * hpDirPath)
 {
 	LONG rv;
 	DIR *hpDir;
@@ -140,13 +138,14 @@ static LONG HPReadBundleValues(void)
 	char fullLibPath[FILENAME_MAX];
 	int listCount = 0;
 
-	hpDir = opendir(PCSCLITE_HP_DROPDIR);
+	hpDir = opendir(hpDirPath);
 
 	if (hpDir == NULL)
 	{
-		Log1(PCSC_LOG_ERROR, "Cannot open PC/SC drivers directory: " PCSCLITE_HP_DROPDIR);
+		Log2(PCSC_LOG_ERROR, "Cannot open PC/SC drivers directory: %s",
+			hpDirPath);
 		Log1(PCSC_LOG_ERROR, "Disabling USB support for pcscd.");
-		return -1;
+		return 0;
 	}
 
 	/* allocate a first array */
@@ -183,7 +182,7 @@ static LONG HPReadBundleValues(void)
 			 * vendor and product ID's for this particular bundle
 			 */
 			snprintf(fullPath, sizeof(fullPath), "%s/%s/Contents/Info.plist",
-				PCSCLITE_HP_DROPDIR, currFP->d_name);
+				hpDirPath, currFP->d_name);
 			fullPath[sizeof(fullPath) - 1] = '\0';
 
 			rv = bundleParse(fullPath, &plist);
@@ -195,7 +194,7 @@ static LONG HPReadBundleValues(void)
 			libraryPath = list_get_at(values, 0);
 			(void)snprintf(fullLibPath, sizeof(fullLibPath),
 				"%s/%s/Contents/%s/%s",
-				PCSCLITE_HP_DROPDIR, currFP->d_name, PCSC_ARCH,
+				hpDirPath, currFP->d_name, PCSC_ARCH,
 				libraryPath);
 			fullLibPath[sizeof(fullLibPath) - 1] = '\0';
 
@@ -285,7 +284,8 @@ static LONG HPReadBundleValues(void)
 
 	if (driverSize == 0)
 	{
-		Log1(PCSC_LOG_INFO, "No bundle files in pcsc drivers directory: " PCSCLITE_HP_DROPDIR);
+		Log2(PCSC_LOG_INFO, "No bundle files in pcsc drivers directory: %s",
+			hpDirPath);
 		Log1(PCSC_LOG_INFO, "Disabling USB support for pcscd");
 	}
 #ifdef DEBUG_HOTPLUG
@@ -342,7 +342,7 @@ static void HPRescanUsbBus(void)
 	ssize_t cnt;
 
 	for (i=0; i < PCSCLITE_MAX_READERS_CONTEXTS; i++)
-		/* clear rollcall */
+		/* clear roll call */
 		readerTracker[i].status = READER_ABSENT;
 
 	cnt = libusb_get_device_list(ctx, &devs);
@@ -401,13 +401,13 @@ static void HPRescanUsbBus(void)
 		for (interface = 0; interface < config_desc->bNumInterfaces;
 				interface++)
 		{
-			int newreader;
+			bool newreader;
 
 			/* A known device has been found */
 			snprintf(bus_device, BUS_DEVICE_STRSIZE, "%d:%d:%d",
 					bus_number, device_address, interface);
 			bus_device[BUS_DEVICE_STRSIZE - 1] = '\0';
-			newreader = TRUE;
+			newreader = true;
 
 			/* Check if the reader is a new one */
 			for (j=0; j<PCSCLITE_MAX_READERS_CONTEXTS; j++)
@@ -417,7 +417,7 @@ static void HPRescanUsbBus(void)
 				{
 					/* The reader is already known */
 					readerTracker[j].status = READER_PRESENT;
-					newreader = FALSE;
+					newreader = false;
 #ifdef DEBUG_HOTPLUG
 					Log2(PCSC_LOG_DEBUG, "Refresh USB device: %s",
 							bus_device);
@@ -447,35 +447,11 @@ static void HPRescanUsbBus(void)
 
 	/* free the libusb allocated list & devices */
 	libusb_free_device_list(devs, 1);
-
-	if (AraKiriHotPlug)
-	{
-		int retval;
-
-		for (i=0; i<PCSCLITE_MAX_READERS_CONTEXTS; i++)
-		{
-			if (readerTracker[i].fullName != NULL)
-				HPCleanupHotPluggable(i);
-		}
-
-		for (i=0; i<driverSize; i++)
-		{
-			/* free strings allocated by strdup() */
-			free(driverTracker[i].bundleName);
-			free(driverTracker[i].libraryPath);
-			free(driverTracker[i].readerName);
-			free(driverTracker[i].CFBundleName);
-		}
-		free(driverTracker);
-
-		Log1(PCSC_LOG_INFO, "Hotplug stopped");
-		pthread_exit(&retval);
-	}
 }
 
 static void * HPEstablishUSBNotifications(int pipefd[2])
 {
-	int i, do_polling;
+	bool do_polling;
 	int r;
 	char c = 42;	/* magic value */
 
@@ -499,8 +475,8 @@ static void * HPEstablishUSBNotifications(int pipefd[2])
 	}
 
 	/* if at least one driver do not have IFD_GENERATE_HOTPLUG */
-	do_polling = FALSE;
-	for (i=0; i<driverSize; i++)
+	do_polling = false;
+	for (int i=0; i<driverSize; i++)
 		if (driverTracker[i].libraryPath)
 			if ((driverTracker[i].ifdCapabilities & IFD_GENERATE_HOTPLUG) == 0)
 			{
@@ -516,7 +492,7 @@ static void * HPEstablishUSBNotifications(int pipefd[2])
 	{
 		Log2(PCSC_LOG_INFO,
 				"Polling forced every %d second(s)", HPForceReaderPolling);
-		do_polling = TRUE;
+		do_polling = true;
 	}
 
 	if (do_polling)
@@ -526,19 +502,14 @@ static void * HPEstablishUSBNotifications(int pipefd[2])
 			SYS_Sleep(HPForceReaderPolling);
 			HPRescanUsbBus();
 		}
-		libusb_exit(ctx);
 	}
 	else
 	{
 		char dummy;
-
-		if (pipe(rescan_pipe) == -1)
-		{
-			Log2(PCSC_LOG_ERROR, "pipe: %s", strerror(errno));
-			return NULL;
-		}
 		while (read(rescan_pipe[0], &dummy, sizeof(dummy)) > 0)
 		{
+			if (AraKiriHotPlug)
+				break;
 			Log1(PCSC_LOG_INFO, "Reload serial configuration");
 			HPRescanUsbBus();
 #ifdef USE_SERIAL
@@ -546,18 +517,39 @@ static void * HPEstablishUSBNotifications(int pipefd[2])
 #endif
 			Log1(PCSC_LOG_INFO, "End reload serial configuration");
 		}
-		close(rescan_pipe[0]);
-		rescan_pipe[0] = -1;
 	}
+
+	libusb_exit(ctx);
+
+	for (int i=0; i<PCSCLITE_MAX_READERS_CONTEXTS; i++)
+	{
+		if (readerTracker[i].fullName != NULL)
+			HPCleanupHotPluggable(i);
+	}
+
+	for (int i=0; i<driverSize; i++)
+	{
+		/* free strings allocated by strdup() */
+		free(driverTracker[i].bundleName);
+		free(driverTracker[i].libraryPath);
+		free(driverTracker[i].readerName);
+		free(driverTracker[i].CFBundleName);
+	}
+	free(driverTracker);
+
+	close(rescan_pipe[0]);
+	rescan_pipe[0] = -1;
+
+	Log1(PCSC_LOG_INFO, "Hotplug stopped");
 
 	return NULL;
 }
 
-LONG HPSearchHotPluggables(void)
+LONG HPSearchHotPluggables(const char * hpDirPath)
 {
 	int i;
 
-	AraKiriHotPlug = FALSE;
+	AraKiriHotPlug = false;
 	for (i=0; i<PCSCLITE_MAX_READERS_CONTEXTS; i++)
 	{
 		readerTracker[i].status = READER_ABSENT;
@@ -565,8 +557,9 @@ LONG HPSearchHotPluggables(void)
 		readerTracker[i].fullName = NULL;
 	}
 
-	if (HPReadBundleValues() > 0)
+	if (HPReadBundleValues(hpDirPath) > 0)
 	{
+		/* used for waiting for the initialization completion */
 		int pipefd[2];
 		char c;
 
@@ -576,7 +569,14 @@ LONG HPSearchHotPluggables(void)
 			return -1;
 		}
 
-		ThreadCreate(&usbNotifyThread, THREAD_ATTR_DETACHED,
+		/* used for rescan events */
+		if (pipe(rescan_pipe) == -1)
+		{
+			Log2(PCSC_LOG_ERROR, "pipe: %s", strerror(errno));
+			return -1;
+		}
+
+		ThreadCreate(&usbNotifyThread, 0,
 			(PCSCLITE_THREAD_FUNCTION( )) HPEstablishUSBNotifications, pipefd);
 
 		/* Wait for initial readers to setup */
@@ -584,7 +584,7 @@ LONG HPSearchHotPluggables(void)
 		{
 			Log2(PCSC_LOG_ERROR, "read: %s", strerror(errno));
 			return -1;
-		};
+		}
 
 		/* cleanup pipe fd */
 		close(pipefd[0]);
@@ -596,12 +596,18 @@ LONG HPSearchHotPluggables(void)
 
 LONG HPStopHotPluggables(void)
 {
-	AraKiriHotPlug = TRUE;
+	/* tell the rescan thread to shut down; it checks the ara kiri flag, but it
+	 * might also need to be awaken from reading the rescan pipe */
+	AraKiriHotPlug = true;
+	HPReCheckSerialReaders();
+
 	if (rescan_pipe[1] >= 0)
 	{
 		close(rescan_pipe[1]);
 		rescan_pipe[1] = -1;
 	}
+	/* wait for the rescan thread to complete its cleanup */
+	pthread_join(usbNotifyThread, NULL);
 
 	return 0;
 }
@@ -796,8 +802,10 @@ static void HPCleanupHotPluggable(int reader_index)
 /**
  * Sets up callbacks for device hotplug events.
  */
-ULONG HPRegisterForHotplugEvents(void)
+ULONG HPRegisterForHotplugEvents(const char * hpDirPath)
 {
+	(void)hpDirPath;
+
 	(void)pthread_mutex_init(&usbNotifierMutex, NULL);
 	return 0;
 }

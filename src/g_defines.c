@@ -1,7 +1,7 @@
 /*
  * MUSCLE SmartCard Development ( https://pcsclite.apdu.fr/ )
  *
- * Copyright (C) 2004-2010
+ * Copyright (C) 2024
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -28,18 +28,12 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-/**
- * @file
- * @brief prototypes of strlcpy()/strlcat() imported from OpenBSD
- */
+#include "misc.h"
+#include <winscard.h>
 
-#ifdef HAVE_STRLCPY
-#include <string.h>
-#else
-size_t strlcpy(char *dst, const char *src, size_t siz);
-#endif
-
-#ifndef HAVE_STRLCAT
-size_t strlcat(char *dst, const char *src, size_t siz);
-#endif
-
+/** Protocol Control Information for T=0 */
+PCSC_API const SCARD_IO_REQUEST g_rgSCardT0Pci = { SCARD_PROTOCOL_T0, sizeof(SCARD_IO_REQUEST) };
+/** Protocol Control Information for T=1 */
+PCSC_API const SCARD_IO_REQUEST g_rgSCardT1Pci = { SCARD_PROTOCOL_T1, sizeof(SCARD_IO_REQUEST) };
+/** Protocol Control Information for raw access */
+PCSC_API const SCARD_IO_REQUEST g_rgSCardRawPci = { SCARD_PROTOCOL_RAW, sizeof(SCARD_IO_REQUEST) };

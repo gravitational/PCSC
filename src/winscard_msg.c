@@ -5,7 +5,7 @@
  *  David Corcoran <corcoran@musclecard.com>
  * Copyright (C) 2003-2004
  *  Damien Sauveron <damien.sauveron@labri.fr>
- * Copyright (C) 2002-2010
+ * Copyright (C) 2002-2024
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -56,9 +56,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <time.h>
 #include <string.h>
 #include <stdlib.h>
-#ifdef HAVE_SYS_FILIO_H
-#include <sys/filio.h>
-#endif
 
 #include "misc.h"
 #include "pcscd.h"
@@ -82,26 +79,27 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #define member_size(type, member) sizeof(((type *)0)->member)
 
+static char SocketName[member_size(struct sockaddr_un, sun_path)];
+static pthread_once_t SocketName_init_control = PTHREAD_ONCE_INIT;
+static void SocketName_init(void)
+{
+	/* socket name not yet initialized */
+	const char *socketNameEnv;
+
+	socketNameEnv = SYS_GetEnv("PCSCLITE_CSOCK_NAME");
+	if (socketNameEnv)
+		strncpy(SocketName, socketNameEnv, sizeof SocketName);
+	else
+		strncpy(SocketName, PCSCLITE_CSOCK_NAME, sizeof SocketName);
+
+	/* Ensure a NUL byte */
+	SocketName[sizeof SocketName -1] = '\0';
+}
+
 char *getSocketName(void)
 {
-	static char socketName[member_size(struct sockaddr_un, sun_path)];
-
-	if ('\0' == socketName[0])
-	{
-		/* socket name not yet initialized */
-		char *socketNameEnv;
-
-		socketNameEnv = getenv("PCSCLITE_CSOCK_NAME");
-		if (socketNameEnv)
-			strncpy(socketName, socketNameEnv, sizeof(socketName));
-		else
-			strncpy(socketName, PCSCLITE_CSOCK_NAME, sizeof(socketName));
-
-		/* Ensure a NUL byte */
-		socketName[sizeof socketName -1] = '\0';
-	}
-
-	return socketName;
+	pthread_once(&SocketName_init_control, SocketName_init);
+	return SocketName;
 }
 
 /**
@@ -178,7 +176,7 @@ INTERNAL void ClientCloseSession(uint32_t dwClientID)
 }
 
 /**
- * @brief Called by the Client to get the reponse from the server or vice-versa.
+ * @brief Called by the Client to get the response from the server or vice-versa.
  *
  * Reads the message from the file \c filedes.
  *
@@ -240,7 +238,7 @@ INTERNAL LONG MessageReceiveTimeout(uint32_t command, void *buffer_void,
 		/* try to read only when socket is readable */
 		if (pollret > 0)
 		{
-			int readed;
+			ssize_t bytes_read;
 
 			if (!(read_fd.revents & POLLIN))
 			{
@@ -248,14 +246,14 @@ INTERNAL LONG MessageReceiveTimeout(uint32_t command, void *buffer_void,
 				retval = SCARD_F_COMM_ERROR;
 				break;
 			}
-			readed = read(filedes, buffer, remaining);
+			bytes_read = read(filedes, buffer, remaining);
 
-			if (readed > 0)
+			if (bytes_read > 0)
 			{
 				/* we got something */
-				buffer += readed;
-				remaining -= readed;
-			} else if (readed == 0)
+				buffer += bytes_read;
+				remaining -= bytes_read;
+			} else if (bytes_read == 0)
 			{
 				/* peer closed the socket */
 				retval = SCARD_F_COMM_ERROR;
@@ -380,7 +378,7 @@ INTERNAL LONG MessageSend(void *buffer_void, uint64_t buffer_size,
 		/* try to write only when the file descriptor is writable */
 		if (pollret > 0)
 		{
-			int written;
+			ssize_t written;
 
 			if (!(write_fd.revents & POLLOUT))
 			{
@@ -441,7 +439,7 @@ INTERNAL LONG MessageSend(void *buffer_void, uint64_t buffer_size,
 }
 
 /**
- * @brief Called by the Client to get the reponse from the server or vice-versa.
+ * @brief Called by the Client to get the response from the server or vice-versa.
  *
  * Reads the message from the file \c filedes.
  *
@@ -480,7 +478,7 @@ INTERNAL LONG MessageReceive(void *buffer_void, uint64_t buffer_size,
 		/* try to read only when socket is readable */
 		if (pollret > 0)
 		{
-			int readed;
+			ssize_t bytes_read;
 
 			if (!(read_fd.revents & POLLIN))
 			{
@@ -488,14 +486,14 @@ INTERNAL LONG MessageReceive(void *buffer_void, uint64_t buffer_size,
 				retval = SCARD_F_COMM_ERROR;
 				break;
 			}
-			readed = read(filedes, buffer, remaining);
+			bytes_read = read(filedes, buffer, remaining);
 
-			if (readed > 0)
+			if (bytes_read > 0)
 			{
 				/* we got something */
-				buffer += readed;
-				remaining -= readed;
-			} else if (readed == 0)
+				buffer += bytes_read;
+				remaining -= bytes_read;
+			} else if (bytes_read == 0)
 			{
 				/* peer closed the socket */
 				retval = SCARD_F_COMM_ERROR;
@@ -506,7 +504,7 @@ INTERNAL LONG MessageReceive(void *buffer_void, uint64_t buffer_size,
 				 * other errors are fatal */
 				if (errno != EINTR && errno != EAGAIN)
 				{
-					/* connection reseted by pcscd? */
+					/* connection reset by pcscd? */
 					if (ECONNRESET == errno)
 						retval = SCARD_W_SECURITY_VIOLATION;
 					else

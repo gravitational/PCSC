@@ -5,7 +5,7 @@
  *  David Corcoran <corcoran@musclecard.com>
  * Copyright (C) 2003-2004
  *  Damien Sauveron <damien.sauveron@labri.fr>
- * Copyright (C) 2002-2011
+ * Copyright (C) 2002-2023
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -164,6 +164,7 @@ RESPONSECODE IFDCloseIFD(READER_CONTEXT * rContext)
 {
 	RESPONSECODE rv;
 	int repeat;
+	bool do_unlock = true;
 
 #ifndef PCSCLITE_STATIC_DRIVER
 	RESPONSECODE(*IFDH_close_channel) (DWORD) = NULL;
@@ -184,6 +185,9 @@ again:
 			(void)SYS_USleep(100*1000);	/* 100 ms */
 			goto again;
 		}
+		else
+			/* locking failed but we need to close the IFD */
+			do_unlock = false;
 	}
 
 #ifndef PCSCLITE_STATIC_DRIVER
@@ -193,7 +197,8 @@ again:
 #endif
 
 	/* END OF LOCKED REGION */
-	(void)pthread_mutex_unlock(rContext->mMutex);
+	if (do_unlock)
+		(void)pthread_mutex_unlock(rContext->mMutex);
 
 	return rv;
 }
@@ -228,7 +233,7 @@ RESPONSECODE IFDSetCapabilities(READER_CONTEXT * rContext, DWORD dwTag,
 }
 
 /**
- * Get's capabilities in the reader.
+ * Gets capabilities in the reader.
  * Other functions int this file will call
  * the driver directly to not cause a deadlock.
  */

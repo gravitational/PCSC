@@ -3,7 +3,7 @@
  *
  * Copyright (C) 1999-2002
  *  David Corcoran <corcoran@musclecard.com>
- * Copyright (C) 2002-2010
+ * Copyright (C) 2002-2024
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -38,51 +38,54 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "config.h"
 #include <stdio.h>
 #include <string.h>
-#if defined(HAVE_DLFCN_H) && !defined(HAVE_DL_H) && !defined(__APPLE__)
+#ifndef __APPLE__
 #include <dlfcn.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #include "misc.h"
 #include "pcsclite.h"
 #include "debuglog.h"
 #include "dyn_generic.h"
 
-INTERNAL LONG DYN_LoadLibrary(void **pvLHandle, char *pcLibrary)
+INTERNAL void * DYN_LoadLibrary(const char *pcLibrary)
 {
-	*pvLHandle = NULL;
+	void *pvLHandle = NULL;
 #ifndef PCSCLITE_STATIC_DRIVER
-	*pvLHandle = dlopen(pcLibrary, RTLD_LAZY);
+	pvLHandle = dlopen(pcLibrary, RTLD_LAZY);
 
-	if (*pvLHandle == NULL)
+	if (pvLHandle == NULL)
 	{
 		Log3(PCSC_LOG_CRITICAL, "%s: %s", pcLibrary, dlerror());
-		return SCARD_F_UNKNOWN_ERROR;
 	}
+#else
+	(void)pcLibrary;
 #endif
 
-	return SCARD_S_SUCCESS;
+	return pvLHandle;
 }
 
-INTERNAL LONG DYN_CloseLibrary(void **pvLHandle)
+INTERNAL LONG DYN_CloseLibrary(void *pvLHandle)
 {
 #ifndef PCSCLITE_STATIC_DRIVER
 	int ret;
 
-	ret = dlclose(*pvLHandle);
-	*pvLHandle = NULL;
+	ret = dlclose(pvLHandle);
 
 	if (ret)
 	{
 		Log2(PCSC_LOG_CRITICAL, "%s", dlerror());
 		return SCARD_F_UNKNOWN_ERROR;
 	}
+#else
+	(void)pvLHandle;
 #endif
 
 	return SCARD_S_SUCCESS;
 }
 
 INTERNAL LONG DYN_GetAddress(void *pvLHandle, void **pvFHandle,
-	const char *pcFunction, int mayfail)
+	const char *pcFunction, bool mayfail)
 {
 	char pcFunctionName[256];
 	LONG rv = SCARD_S_SUCCESS;
@@ -107,9 +110,13 @@ INTERNAL LONG DYN_GetAddress(void *pvLHandle, void **pvFHandle,
 			pcFunction, dlerror());
 		rv = SCARD_F_UNKNOWN_ERROR;
 	}
+#else
+	(void)pvLHandle;
+	(void)pvFHandle;
+	(void)mayfail;
 #endif
 
 	return rv;
 }
 
-#endif	/* HAVE_DLFCN_H && !HAVE_DL_H && !__APPLE__ */
+#endif	/* !__APPLE__ */

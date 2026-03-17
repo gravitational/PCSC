@@ -3,7 +3,7 @@
  *
  * Copyright (C) 1999-2002
  *  David Corcoran <corcoran@musclecard.com>
- * Copyright (C) 2002-2011
+ * Copyright (C) 2002-2025
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -36,9 +36,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "config.h"
-#ifdef HAVE_SYSLOG_H
 #include <syslog.h>
-#endif
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +47,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <sys/time.h>
 #include <time.h>
 #include <pthread.h>
+#include <stdbool.h>
 
 #include "pcsclite.h"
 #include "misc.h"
@@ -98,7 +97,7 @@ INTERNAL void DebugLogCategory(const int category, const unsigned char *buffer,
 #else
 
 /**
- * Max string size dumping a maxmium of 2 lines of 80 characters
+ * Max string size dumping a maximum of 2 lines of 80 characters
  */
 #define DEBUG_BUF_SIZE 2048
 
@@ -108,7 +107,9 @@ static char LogCategory = DEBUG_CATEGORY_NOTHING;
 /** default level */
 static char LogLevel = PCSC_LOG_ERROR;
 
-static signed char LogDoColor = 0;	/**< no color by default */
+static bool LogDoColor = false;	/**< no color by default */
+
+static pthread_mutex_t LastTimeMutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void log_line(const int priority, const char *DebugBuffer,
 	unsigned int rv);
@@ -172,11 +173,13 @@ const char * rv2text(unsigned int rv)
 			CASE(SCARD_E_INVALID_PARAMETER);
 			CASE(SCARD_E_INVALID_VALUE);
 			CASE(SCARD_E_NO_MEMORY);
+			CASE(SCARD_E_NO_READERS_AVAILABLE);
 			CASE(SCARD_E_NO_SERVICE);
 			CASE(SCARD_E_NO_SMARTCARD);
 			CASE(SCARD_E_NOT_TRANSACTED);
 			CASE(SCARD_E_PROTO_MISMATCH);
 			CASE(SCARD_E_READER_UNAVAILABLE);
+			CASE(SCARD_E_SERVICE_STOPPED);
 			CASE(SCARD_E_SHARING_VIOLATION);
 			CASE(SCARD_E_TIMEOUT);
 			CASE(SCARD_E_UNKNOWN_READER);
@@ -187,7 +190,6 @@ const char * rv2text(unsigned int rv)
 			CASE(SCARD_W_RESET_CARD);
 			CASE(SCARD_W_UNPOWERED_CARD);
 			CASE(SCARD_W_UNRESPONSIVE_CARD);
-			CASE(SCARD_E_NO_READERS_AVAILABLE);
 
 			default:
 				(void)snprintf(strError, sizeof(strError)-1,
@@ -213,6 +215,7 @@ static void log_line(const int priority, const char *DebugBuffer,
 		pthread_t thread_id;
 		const char *rv_text = NULL;
 
+		(void)pthread_mutex_lock(&LastTimeMutex);
 		gettimeofday(&new_time, NULL);
 		if (0 == last_time.tv_sec)
 			last_time = new_time;
@@ -230,6 +233,7 @@ static void log_line(const int priority, const char *DebugBuffer,
 			delta = 99999999;
 
 		last_time = new_time;
+		(void)pthread_mutex_unlock(&LastTimeMutex);
 
 		thread_id = pthread_self();
 
@@ -260,10 +264,10 @@ static void log_line(const int priority, const char *DebugBuffer,
 					break;
 			}
 
-#ifdef __APPLE__
-#define THREAD_FORMAT "%p"
-#else
+#ifdef __GLIBC__
 #define THREAD_FORMAT "%lu"
+#else
+#define THREAD_FORMAT "%p"
 #endif
 			if (rv_text)
 			{
@@ -337,8 +341,11 @@ void DebugLogSetLogType(const int dbgtype)
 		case DEBUGLOG_NO_DEBUG:
 		case DEBUGLOG_SYSLOG_DEBUG:
 		case DEBUGLOG_STDOUT_DEBUG:
+			LogMsgType = dbgtype;
+			break;
 		case DEBUGLOG_STDOUT_COLOR_DEBUG:
 			LogMsgType = dbgtype;
+			LogDoColor = true;
 			break;
 		default:
 			Log2(PCSC_LOG_CRITICAL, "unknown log type (%d), using stdout",
@@ -347,12 +354,11 @@ void DebugLogSetLogType(const int dbgtype)
 	}
 
 	/* log to stdout and stdout is a tty? */
-	if ((DEBUGLOG_STDOUT_DEBUG == LogMsgType && isatty(fileno(stdout)))
-		|| (DEBUGLOG_STDOUT_COLOR_DEBUG == LogMsgType))
+	if (DEBUGLOG_STDOUT_DEBUG == LogMsgType && isatty(fileno(stdout)))
 	{
-		char *term;
+		const char *term;
 
-		term = getenv("TERM");
+		term = SYS_GetEnv("TERM");
 		if (term)
 		{
 			const char *terms[] = { "linux", "xterm", "xterm-color", "Eterm", "rxvt", "rxvt-unicode", "xterm-256color" };
@@ -364,7 +370,7 @@ void DebugLogSetLogType(const int dbgtype)
 				/* we found a supported term? */
 				if (0 == strcmp(terms[i], term))
 				{
-					LogDoColor = 1;
+					LogDoColor = true;
 					break;
 				}
 			}
