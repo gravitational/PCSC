@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2000-2003
  *  David Corcoran <corcoran@musclecard.com>
- * Copyright (C) 2002-2009
+ * Copyright (C) 2002-2022
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -53,8 +53,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #define PCSCLITE_HP_BASE_PORT		0x200000
 
-	LONG HPSearchHotPluggables(void);
-	ULONG HPRegisterForHotplugEvents(void);
+	LONG HPSearchHotPluggables(const char * hpDirPath);
+	ULONG HPRegisterForHotplugEvents(const char * hpDirPath);
 	LONG HPStopHotPluggables(void);
 	void HPReCheckSerialReaders(void);
 

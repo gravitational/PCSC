@@ -5,7 +5,7 @@
  *  David Corcoran <corcoran@musclecard.com>
  * Copyright (C) 2003-2004
  *  Damien Sauveron <damien.sauveron@labri.fr>
- * Copyright (C) 2002-2010
+ * Copyright (C) 2002-2023
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -54,9 +54,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <stdio.h>
 #include <time.h>
 #include <string.h>
-#ifdef HAVE_SYS_FILIO_H
-#include <sys/filio.h>
-#endif
 #ifdef USE_LIBSYSTEMD
 #include <systemd/sd-daemon.h>
 #endif
@@ -68,7 +65,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "winscard_msg.h"
 
 /**
- * Socket to a file, used for clients-server comminication.
+ * Socket to a file, used for clients-server communication.
  */
 static int commonSocket = 0;
 extern char AraKiri;

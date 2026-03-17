@@ -3,7 +3,7 @@
  *
  * Copyright (C) 1999-2002
  *  David Corcoran <corcoran@musclecard.com>
- * Copyright (C) 2002-2011
+ * Copyright (C) 2002-2024
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -42,10 +42,12 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdbool.h>
 
-/* We shall not export the log_msg() sumbol */
+/* We shall not export the log_msg() symbol */
 #undef PCSC_API
 #include "debuglog.h"
+#include "sys_generic.h"
 
 #define DEBUG_BUF_SIZE 2048
 
@@ -66,18 +68,18 @@ static signed char LogDoColor = 0;	/**< no color by default */
 
 static void log_init(void)
 {
-	char *e;
+	const char *e;
 
-	e = getenv("PCSCLITE_DEBUG");
+	e = SYS_GetEnv("PCSCLITE_DEBUG");
 	if (e)
 		LogLevel = atoi(e);
 
 	/* log to stderr and stderr is a tty? */
 	if (isatty(fileno(stderr)))
 	{
-		char *term;
+		const char *term;
 
-		term = getenv("TERM");
+		term = SYS_GetEnv("TERM");
 		if (term)
 		{
 			const char *terms[] = { "linux", "xterm", "xterm-color", "Eterm", "rxvt", "rxvt-unicode" };
@@ -101,12 +103,12 @@ void log_msg(const int priority, const char *fmt, ...)
 {
 	char DebugBuffer[DEBUG_BUF_SIZE];
 	va_list argptr;
-	static int is_initialized = 0;
+	static bool is_initialized = false;
 
 	if (!is_initialized)
 	{
 		log_init();
-		is_initialized = 1;
+		is_initialized = true;
 	}
 
 	if (priority < LogLevel) /* log priority lower than threshold? */

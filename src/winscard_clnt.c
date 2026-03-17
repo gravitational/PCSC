@@ -7,7 +7,7 @@
  *  Damien Sauveron <damien.sauveron@labri.fr>
  * Copyright (C) 2005
  *  Martin Paljak <martin@paljak.pri.ee>
- * Copyright (C) 2002-2011
+ * Copyright (C) 2002-2025
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  * Copyright (C) 2009
  *  Jean-Luc Giraud <jlgiraud@googlemail.com>
@@ -114,13 +114,13 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <sys/time.h>
 #include <pthread.h>
 #include <sys/wait.h>
+#include <stdbool.h>
 
 #include "misc.h"
 #include "pcscd.h"
 #include "winscard.h"
 #include "debuglog.h"
 
-#include "readerfactory.h"
 #include "eventhandler.h"
 #include "sys_generic.h"
 #include "winscard_msg.h"
@@ -134,12 +134,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 //#define DO_PROFILE
 
 
-#ifndef TRUE
-#define TRUE 1
-#define FALSE 0
-#endif
-
-static char sharing_shall_block = TRUE;
+static bool sharing_shall_block = true;
+static int Protocol_version;
 
 #define COLOR_RED "\33[01;31m"
 #define COLOR_GREEN "\33[32m"
@@ -185,14 +181,14 @@ static void trace(const char *func, const char direction, const char *fmt, ...)
 pthread_t threads[MAX_THREADS];
 struct timeval profile_time_start[MAX_THREADS];
 FILE *profile_fd;
-char profile_tty;
+bool profile_tty;
 
 #define PROFILE_START profile_start();
 #define PROFILE_END(rv) profile_end(__FUNCTION__, rv);
 
 static void profile_start(void)
 {
-	static char initialized = FALSE;
+	static bool initialized = false;
 	pthread_t t;
 	int i;
 
@@ -200,7 +196,7 @@ static void profile_start(void)
 	{
 		char filename[80];
 
-		initialized = TRUE;
+		initialized = true;
 		sprintf(filename, "%s-%d", PROFILE_FILE, getuid());
 		profile_fd = fopen(filename, "a+");
 		if (NULL == profile_fd)
@@ -212,9 +208,9 @@ static void profile_start(void)
 		fprintf(profile_fd, "\nStart a new profile\n");
 
 		if (isatty(fileno(stderr)))
-			profile_tty = TRUE;
+			profile_tty = true;
 		else
-			profile_tty = FALSE;
+			profile_tty = false;
 	}
 
 	t = pthread_self();
@@ -255,14 +251,10 @@ static void profile_end(const char *f, LONG rv)
 
 	if (profile_tty)
 	{
-		if (rv != SCARD_S_SUCCESS)
-			fprintf(stderr,
-				COLOR_RED "RESULT %s " COLOR_MAGENTA "%ld "
-				COLOR_BLUE "0x%08lX %s" COLOR_NORMAL "\n",
-				f, d, rv, pcsc_stringify_error(rv));
-		else
-			fprintf(stderr, COLOR_RED "RESULT %s " COLOR_MAGENTA "%ld"
-				COLOR_NORMAL "\n", f, d);
+		fprintf(stderr,
+			COLOR_RED "RESULT %s " COLOR_MAGENTA "%ld "
+			COLOR_BLUE "0x%08lX" COLOR_NORMAL "\n",
+			f, d, rv);
 	}
 	fprintf(profile_fd, "%s %ld\n", f, d);
 	fflush(profile_fd);
@@ -314,7 +306,7 @@ struct _psContextMap
 	SCARDCONTEXT hContext;			/**< Application Context ID */
 	pthread_mutex_t mMutex;			/**< Mutex for this context */
 	list_t channelMapList;
-	char cancellable;				/**< We are in a cancellable call */
+	bool cancellable;				/**< We are in a cancellable call */
 };
 /**
  * @brief Represents an Application Context on the Client side.
@@ -324,6 +316,7 @@ struct _psContextMap
 typedef struct _psContextMap SCONTEXTMAP;
 
 static list_t contextMapList;
+pthread_mutex_t contextMapList_lock;	/**< lock for the above list */
 
 static int SCONTEXTMAP_seeker(const void *el, const void *key)
 {
@@ -346,7 +339,8 @@ static int SCONTEXTMAP_seeker(const void *el, const void *key)
 /**
  * Make sure the initialization code is executed only once.
  */
-static short isExecuted = 0;
+static bool isExecuted = false;
+static pthread_once_t init_lib_control = PTHREAD_ONCE_INIT;
 
 
 /**
@@ -359,13 +353,7 @@ static pthread_mutex_t clientMutex = PTHREAD_MUTEX_INITIALIZER;
  * Area used to read status information about the readers.
  */
 static READER_STATE readerStates[PCSCLITE_MAX_READERS_CONTEXTS];
-
-/** Protocol Control Information for T=0 */
-PCSC_API const SCARD_IO_REQUEST g_rgSCardT0Pci = { SCARD_PROTOCOL_T0, sizeof(SCARD_IO_REQUEST) };
-/** Protocol Control Information for T=1 */
-PCSC_API const SCARD_IO_REQUEST g_rgSCardT1Pci = { SCARD_PROTOCOL_T1, sizeof(SCARD_IO_REQUEST) };
-/** Protocol Control Information for raw access */
-PCSC_API const SCARD_IO_REQUEST g_rgSCardRawPci = { SCARD_PROTOCOL_RAW, sizeof(SCARD_IO_REQUEST) };
+static pthread_mutex_t readerStatesMutex = PTHREAD_MUTEX_INITIALIZER;
 
 
 static LONG SCardAddContext(SCARDCONTEXT, DWORD);
@@ -384,6 +372,7 @@ static void SCardRemoveHandle(SCARDHANDLE);
 static LONG SCardGetSetAttrib(SCARDHANDLE hCard, int command, DWORD dwAttrId,
 	LPBYTE pbAttr, LPDWORD pcbAttrLen);
 
+static LONG getReaderEvents(SCONTEXTMAP * currentContextMap, int *readerEvents);
 static LONG getReaderStates(SCONTEXTMAP * currentContextMap);
 static LONG getReaderStatesAndRegisterForEvents(SCONTEXTMAP * currentContextMap);
 static LONG unregisterFromEvents(SCONTEXTMAP * currentContextMap);
@@ -418,10 +407,10 @@ inline static void SCardUnlockThread(void)
  *
  * @param[in] hContext Application Context whose index will be find.
  *
- * @return \c TRUE if the context exists
- * @return \c FALSE if the context does not exist
+ * @return \c true if the context exists
+ * @return \c false if the context does not exist
  */
-static int SCardGetContextValidity(SCARDCONTEXT hContext)
+static bool SCardGetContextValidity(SCARDCONTEXT hContext)
 {
 	SCONTEXTMAP * currentContextMap;
 
@@ -440,8 +429,8 @@ static LONG SCardEstablishContextTH(DWORD, LPCVOID, LPCVOID,
  *
  * This must be the first WinSCard function called in a PC/SC application.
  * Each thread of an application shall use its own \ref SCARDCONTEXT, unless
- * calling \ref SCardCancel(), which MUST be called with the same context as the
- * context used to call \ref SCardGetStatusChange().
+ * calling SCardCancel(), which MUST be called with the same context as the
+ * context used to call SCardGetStatusChange().
  *
  * @ingroup API
  * @param[in] dwScope Scope of the establishment.
@@ -460,6 +449,7 @@ static LONG SCardEstablishContextTH(DWORD, LPCVOID, LPCVOID,
  * @retval SCARD_E_INVALID_VALUE Invalid scope type passed (\ref SCARD_E_INVALID_VALUE )
  * @retval SCARD_E_NO_MEMORY There is no free slot to store \p hContext (\ref SCARD_E_NO_MEMORY)
  * @retval SCARD_E_NO_SERVICE The server is not running (\ref SCARD_E_NO_SERVICE)
+ * @retval SCARD_E_SERVICE_STOPPED Wrong communication protocol version (\ref SCARD_E_SERVICE_STOPPED)
  * @retval SCARD_F_COMM_ERROR An internal communications error has been detected (\ref SCARD_F_COMM_ERROR)
  * @retval SCARD_F_INTERNAL_ERROR An internal consistency check failed (\ref SCARD_F_INTERNAL_ERROR)
  *
@@ -498,9 +488,53 @@ end:
 #ifdef DESTRUCTOR
 DESTRUCTOR static void destructor(void)
 {
+	(void)pthread_mutex_lock(&contextMapList_lock);
 	list_destroy(&contextMapList);
+	(void)pthread_mutex_unlock(&contextMapList_lock);
+
+	(void)pthread_mutex_destroy(&contextMapList_lock);
 }
 #endif
+
+/*
+ * Do this only once:
+ * - Initialize context list.
+ */
+static void init_lib(void)
+{
+	int lrv;
+
+	/* NOTE: The list will be freed only if DESTRUCTOR is defined.
+	 * Applications which load and unload the library may leak
+	 * the list's internal structures. */
+	lrv = list_init(&contextMapList);
+	if (lrv < 0)
+	{
+		Log2(PCSC_LOG_CRITICAL, "list_init failed with return value: %d",
+			lrv);
+		return;
+	}
+
+	lrv = list_attributes_seeker(&contextMapList,
+			SCONTEXTMAP_seeker);
+	if (lrv <0)
+	{
+		Log2(PCSC_LOG_CRITICAL,
+			"list_attributes_seeker failed with return value: %d", lrv);
+		list_destroy(&contextMapList);
+		return;
+	}
+
+	if (SYS_GetEnv("PCSCLITE_NO_BLOCKING"))
+	{
+		Log1(PCSC_LOG_INFO, "Disable shared blocking");
+		sharing_shall_block = false;
+	}
+
+	(void)pthread_mutex_init(&contextMapList_lock, NULL);
+
+	isExecuted = true;
+}
 
 /**
  * @brief Creates a communication context to the PC/SC Resource
@@ -536,6 +570,7 @@ static LONG SCardEstablishContextTH(DWORD dwScope,
 	LONG rv;
 	struct establish_struct scEstablishStruct;
 	uint32_t dwClientID = 0;
+	struct version_struct veStr;
 
 	(void)pvReserved1;
 	(void)pvReserved2;
@@ -544,44 +579,9 @@ static LONG SCardEstablishContextTH(DWORD dwScope,
 	else
 		*phContext = 0;
 
-	/*
-	 * Do this only once:
-	 * - Initialize context list.
-	 */
-	if (isExecuted == 0)
-	{
-		int lrv;
-
-		/* NOTE: The list will be freed only if DESTRUCTOR is defined.
-		 * Applications which load and unload the library may leak
-		 * the list's internal structures. */
-		lrv = list_init(&contextMapList);
-		if (lrv < 0)
-		{
-			Log2(PCSC_LOG_CRITICAL, "list_init failed with return value: %d",
-				lrv);
-			return SCARD_E_NO_MEMORY;
-		}
-
-		lrv = list_attributes_seeker(&contextMapList,
-				SCONTEXTMAP_seeker);
-		if (lrv <0)
-		{
-			Log2(PCSC_LOG_CRITICAL,
-				"list_attributes_seeker failed with return value: %d", lrv);
-			list_destroy(&contextMapList);
-			return SCARD_E_NO_MEMORY;
-		}
-
-		if (getenv("PCSCLITE_NO_BLOCKING"))
-		{
-			Log1(PCSC_LOG_INFO, "Disable shared blocking");
-			sharing_shall_block = FALSE;
-		}
-
-		isExecuted = 1;
-	}
-
+	pthread_once(&init_lib_control, init_lib);
+	if (!isExecuted)
+		return SCARD_E_NO_MEMORY;
 
 	/* Establishes a connection to the server */
 	if (ClientSetupSession(&dwClientID) != 0)
@@ -589,36 +589,56 @@ static LONG SCardEstablishContextTH(DWORD dwScope,
 		return SCARD_E_NO_SERVICE;
 	}
 
-	{	/* exchange client/server protocol versions */
-		struct version_struct veStr;
+	veStr.major = PROTOCOL_VERSION_MAJOR;
+	veStr.minor = PROTOCOL_VERSION_MINOR;
 
-		veStr.major = PROTOCOL_VERSION_MAJOR;
-		veStr.minor = PROTOCOL_VERSION_MINOR;
-		veStr.rv = SCARD_S_SUCCESS;
+connect_again:
+	/* exchange client/server protocol versions */
 
-		rv = MessageSendWithHeader(CMD_VERSION, dwClientID, sizeof(veStr),
+	veStr.rv = SCARD_S_SUCCESS;
+
+	rv = MessageSendWithHeader(CMD_VERSION, dwClientID, sizeof(veStr),
 			&veStr);
-		if (rv != SCARD_S_SUCCESS)
-			goto cleanup;
+	if (rv != SCARD_S_SUCCESS)
+		goto cleanup;
 
-		/* Read a message from the server */
-		rv = MessageReceive(&veStr, sizeof(veStr), dwClientID);
-		if (rv != SCARD_S_SUCCESS)
-		{
-			Log1(PCSC_LOG_CRITICAL,
+	/* Read a message from the server */
+	rv = MessageReceive(&veStr, sizeof(veStr), dwClientID);
+	if (rv != SCARD_S_SUCCESS)
+	{
+		Log1(PCSC_LOG_CRITICAL,
 				"Your pcscd is too old and does not support CMD_VERSION");
-			goto cleanup;
-		}
+		goto cleanup;
+	}
 
-		Log3(PCSC_LOG_INFO, "Server is protocol version %d:%d",
+	Log3(PCSC_LOG_INFO, "Server is protocol version %d:%d",
 			veStr.major, veStr.minor);
+	Log3(PCSC_LOG_INFO, "Client is protocol version %d:%d",
+			PROTOCOL_VERSION_MAJOR, PROTOCOL_VERSION_MINOR);
 
-		if (veStr.rv != SCARD_S_SUCCESS)
+	if (SCARD_E_SERVICE_STOPPED == veStr.rv)
+	{
+		/* server complained about our protocol version? */
+		if (PROTOCOL_VERSION_MAJOR == veStr.major)
 		{
-			rv = veStr.rv;
-			goto cleanup;
+			if (PROTOCOL_VERSION_MINOR_CLIENT_BACKWARD <= veStr.minor)
+			{
+				/* try again with the protocol version proposed by
+				 * the server */
+				Log1(PCSC_LOG_INFO, "Using backward compatibility");
+				goto connect_again;
+			}
 		}
 	}
+
+	if (veStr.rv != SCARD_S_SUCCESS)
+	{
+		rv = veStr.rv;
+		goto cleanup;
+	}
+
+	/* store protocol version of the server */
+	Protocol_version = veStr.major * 1000 + veStr.minor;
 
 again:
 	/*
@@ -922,7 +942,7 @@ end:
  * @retval SCARD_S_SUCCESS Successful (\ref SCARD_S_SUCCESS)
  * @retval SCARD_E_INVALID_HANDLE Invalid \p hCard handle (\ref SCARD_E_INVALID_HANDLE)
  * @retval SCARD_E_INVALID_PARAMETER \p phContext is null. (\ref SCARD_E_INVALID_PARAMETER)
- * @retval SCARD_E_INVALID_VALUE Invalid sharing mode, requested protocol, or reader name (\ref SCARD_E_INVALID_VALUE)
+ * @retval SCARD_E_INVALID_VALUE Invalid \p hCard, sharing mode, requested protocol, or reader name (\ref SCARD_E_INVALID_VALUE)
  * @retval SCARD_E_NO_SERVICE The server is not running (\ref SCARD_E_NO_SERVICE)
  * @retval SCARD_E_NO_SMARTCARD No smart card present (\ref SCARD_E_NO_SMARTCARD)
  * @retval SCARD_E_PROTO_MISMATCH Requested protocol is unknown (\ref SCARD_E_PROTO_MISMATCH)
@@ -1113,13 +1133,13 @@ error:
 
 /**
  * @brief Establishes a temporary exclusive access mode for
- * doing a serie of commands in a transaction.
+ * doing a series of commands in a transaction.
  *
  * You might want to use this when you are selecting a few files and then
  * writing a large file so you can make sure that another application will
  * not change the current file. If another application has a lock on this
- * reader or this application is in \ref SCARD_SHARE_EXCLUSIVE there will be no
- * action taken.
+ * reader or this application is in \ref SCARD_SHARE_EXCLUSIVE the
+ * function will block until it can continue.
  *
  * @ingroup API
  * @param[in] hCard Connection made from SCardConnect().
@@ -1131,6 +1151,7 @@ error:
  * @retval SCARD_E_READER_UNAVAILABLE The reader has been removed (\ref SCARD_E_READER_UNAVAILABLE)
  * @retval SCARD_E_SHARING_VIOLATION Someone else has exclusive rights (\ref SCARD_E_SHARING_VIOLATION)
  * @retval SCARD_F_COMM_ERROR An internal communications error has been detected (\ref SCARD_F_COMM_ERROR)
+ * @retval SCARD_E_INVALID_VALUE An invalid value is used for \p hCard (for example the reader is no more present) (\ref SCARD_E_INVALID_VALUE)
  *
  * @code
  * SCARDCONTEXT hContext;
@@ -1225,7 +1246,7 @@ LONG SCardBeginTransaction(SCARDHANDLE hCard)
  * @return Error code.
  * @retval SCARD_S_SUCCESS Successful (\ref SCARD_S_SUCCESS)
  * @retval SCARD_E_INVALID_HANDLE Invalid \p hCard handle (\ref SCARD_E_INVALID_HANDLE)
- * @retval SCARD_E_INVALID_VALUE Invalid value for \p dwDisposition (\ref SCARD_E_INVALID_VALUE)
+ * @retval SCARD_E_INVALID_VALUE Invalid value for \p dwDisposition or \p hCard (\ref SCARD_E_INVALID_VALUE)
  * @retval SCARD_E_NO_SERVICE The server is not running (\ref SCARD_E_NO_SERVICE)
  * @retval SCARD_E_READER_UNAVAILABLE The reader has been removed (\ref SCARD_E_READER_UNAVAILABLE)
  * @retval SCARD_E_SHARING_VIOLATION Someone else has exclusive rights (\ref SCARD_E_SHARING_VIOLATION)
@@ -1440,6 +1461,9 @@ retry:
 	if (rv == -1)
 		return SCARD_E_INVALID_HANDLE;
 
+	/* lock access to readerStates[] */
+	(void)pthread_mutex_lock(&readerStatesMutex);
+
 	/* synchronize reader states with daemon */
 	rv = getReaderStates(currentContextMap);
 	if (rv != SCARD_S_SUCCESS)
@@ -1483,6 +1507,7 @@ retry:
 	if (sharing_shall_block && (SCARD_E_SHARING_VIOLATION == rv))
 	{
 		(void)pthread_mutex_unlock(&currentContextMap->mMutex);
+		(void)pthread_mutex_unlock(&readerStatesMutex);
 		(void)SYS_USleep(PCSCLITE_LOCK_POLL_RATE);
 		goto retry;
 	}
@@ -1565,6 +1590,7 @@ retry:
 
 end:
 	(void)pthread_mutex_unlock(&currentContextMap->mMutex);
+	(void)pthread_mutex_unlock(&readerStatesMutex);
 
 	PROFILE_END(rv)
 
@@ -1589,11 +1615,15 @@ end:
  * be used to detect a card removal/insertion between two calls to
  * SCardGetStatusChange()
  *
- * To wait for a reader event (reader added or removed) you may use the special
- * reader name \c "\\?PnP?\Notification". If a reader event occurs the state of
- * this reader will change and the bit \ref SCARD_STATE_CHANGED will be set.
+ * To wait for a reader event (reader added or removed) you may use the
+ * special reader name \c "\\?PnP?\Notification". If a reader event
+ * occurs the state of this reader will change and the bit \ref
+ * SCARD_STATE_CHANGED will be set.
+ * To detect a reader event betweeen 2 calls to SCardGetStatusChange()
+ * you can use the upper 16 bits of \p dwCurrentState. See https://blog.apdu.fr/posts/2024/08/improved-scardgetstatuschange-for-pnpnotification-special-reader/
+
  *
- * To cancel the ongoing call, use \ref SCardCancel() with the same
+ * To cancel the ongoing call, use SCardCancel() with the same
  * \ref SCARDCONTEXT.
  *
  * @code
@@ -1689,14 +1719,16 @@ LONG SCardGetStatusChange(SCARDCONTEXT hContext, DWORD dwTimeout,
 	SCONTEXTMAP * currentContextMap;
 	int currentReaderCount = 0;
 	LONG rv = SCARD_S_SUCCESS;
+	int pnp_reader = -1;
 
 	PROFILE_START
 	API_TRACE_IN("%ld %ld %d", hContext, dwTimeout, cReaders)
 #ifdef DO_TRACE
 	for (j=0; j<cReaders; j++)
 	{
-		API_TRACE_IN("[%d] %s %lX %lX", j, rgReaderStates[j].szReader,
-			rgReaderStates[j].dwCurrentState, rgReaderStates[j].dwEventState)
+		API_TRACE_IN("[%d] %s %lX %lX (%d)", j, rgReaderStates[j].szReader,
+			rgReaderStates[j].dwCurrentState, rgReaderStates[j].dwEventState,
+			rgReaderStates[j].cbAtr)
 	}
 #endif
 
@@ -1746,10 +1778,17 @@ LONG SCardGetStatusChange(SCARDCONTEXT hContext, DWORD dwTimeout,
 		goto error;
 	}
 
+	/* lock access to readerStates[] */
+	(void)pthread_mutex_lock(&readerStatesMutex);
+
 	/* synchronize reader states with daemon */
 	rv = getReaderStatesAndRegisterForEvents(currentContextMap);
+
 	if (rv != SCARD_S_SUCCESS)
+	{
+		(void)pthread_mutex_unlock(&readerStatesMutex);
 		goto end;
+	}
 
 	/* check all the readers are already known */
 	for (j=0; j<cReaders; j++)
@@ -1771,10 +1810,14 @@ LONG SCardGetStatusChange(SCARDCONTEXT hContext, DWORD dwTimeout,
 			if (strcasecmp(readerName, "\\\\?PnP?\\Notification") != 0)
 			{
 				rv = SCARD_E_UNKNOWN_READER;
+				(void)pthread_mutex_unlock(&readerStatesMutex);
 				goto end;
 			}
+			else
+				pnp_reader = j;
 		}
 	}
+	(void)pthread_mutex_unlock(&readerStatesMutex);
 
 	/* Clear the event state for all readers */
 	for (j = 0; j < cReaders; j++)
@@ -1782,6 +1825,33 @@ LONG SCardGetStatusChange(SCARDCONTEXT hContext, DWORD dwTimeout,
 
 	/* Now is where we start our event checking loop */
 	Log2(PCSC_LOG_DEBUG, "Event Loop Start, dwTimeout: %ld", dwTimeout);
+
+	/* index of the PnP readerin rgReaderStates[] */
+	if (pnp_reader >= 0)
+	{
+		int readerEvents;
+		currReader = &rgReaderStates[pnp_reader];
+
+		/* PnP special reader */
+		if (SCARD_S_SUCCESS == getReaderEvents(currentContextMap, &readerEvents))
+		{
+			int previousReaderEvents = currReader->dwCurrentState >> 16;
+
+			// store readerEvents in .dwEventState high word
+			currReader->dwEventState = (currReader->dwEventState & 0xFFFF) + (readerEvents << 16);
+			if (
+				/* the value has changed since the last call */
+				(previousReaderEvents != readerEvents)
+				/* backward compatibility: only if we had a non-null
+				 * reader events value */
+				&& previousReaderEvents)
+			{
+				currReader->dwEventState |= SCARD_STATE_CHANGED;
+				rv = SCARD_S_SUCCESS;
+				dwBreakFlag = 1;
+			}
+		}
+	}
 
 	/* Get the initial reader count on the system */
 	for (j=0; j < PCSCLITE_MAX_READERS_CONTEXTS; j++)
@@ -1807,6 +1877,9 @@ LONG SCardGetStatusChange(SCARDCONTEXT hContext, DWORD dwTimeout,
 			const char *readerName;
 			int i;
 
+			/* lock access to readerStates[] */
+			(void)pthread_mutex_lock(&readerStatesMutex);
+
 			/* Looks for correct readernames */
 			readerName = currReader->szReader;
 			for (i = 0; i < PCSCLITE_MAX_READERS_CONTEXTS; i++)
@@ -1829,8 +1902,16 @@ LONG SCardGetStatusChange(SCARDCONTEXT hContext, DWORD dwTimeout,
 
 					if (newReaderCount != currentReaderCount)
 					{
+						int readerEvents;
+
 						Log1(PCSC_LOG_INFO, "Reader list changed");
 						currentReaderCount = newReaderCount;
+
+						if (SCARD_S_SUCCESS == getReaderEvents(currentContextMap, &readerEvents))
+						{
+							// store readerEvents in .dwEventState high word
+							currReader->dwEventState = (currReader->dwEventState & 0xFFFF) + (readerEvents << 16);
+						}
 
 						currReader->dwEventState |= SCARD_STATE_CHANGED;
 						dwBreakFlag = 1;
@@ -2052,6 +2133,8 @@ LONG SCardGetStatusChange(SCARDCONTEXT hContext, DWORD dwTimeout,
 					dwBreakFlag = 1;
 				}
 			}	/* End of SCARD_STATE_UNKNOWN */
+
+			(void)pthread_mutex_unlock(&readerStatesMutex);
 		}	/* End of SCARD_STATE_IGNORE */
 
 		/* Counter and resetter */
@@ -2077,7 +2160,7 @@ LONG SCardGetStatusChange(SCARDCONTEXT hContext, DWORD dwTimeout,
 				waitStatusStruct.rv = SCARD_S_SUCCESS;
 
 				/* another thread can do SCardCancel() */
-				currentContextMap->cancellable = TRUE;
+				currentContextMap->cancellable = true;
 
 				/*
 				 * Read a message from the server
@@ -2086,9 +2169,9 @@ LONG SCardGetStatusChange(SCARDCONTEXT hContext, DWORD dwTimeout,
 					&waitStatusStruct, sizeof(waitStatusStruct),
 					currentContextMap->dwClientID, dwTime);
 
-				/* SCardCancel() will return immediatly with success
+				/* SCardCancel() will return immediately with success
 				 * because something changed on the daemon side. */
-				currentContextMap->cancellable = FALSE;
+				currentContextMap->cancellable = false;
 
 				/* timeout */
 				if (SCARD_E_TIMEOUT == rv)
@@ -2108,7 +2191,9 @@ LONG SCardGetStatusChange(SCARDCONTEXT hContext, DWORD dwTimeout,
 				}
 
 				/* synchronize reader states with daemon */
+				(void)pthread_mutex_lock(&readerStatesMutex);
 				rv = getReaderStatesAndRegisterForEvents(currentContextMap);
+				(void)pthread_mutex_unlock(&readerStatesMutex);
 				if (rv != SCARD_S_SUCCESS)
 					goto end;
 
@@ -2152,8 +2237,9 @@ error:
 #ifdef DO_TRACE
 	for (j=0; j<cReaders; j++)
 	{
-		API_TRACE_OUT("[%d] %s %X %X", j, rgReaderStates[j].szReader,
-			rgReaderStates[j].dwCurrentState, rgReaderStates[j].dwEventState)
+		API_TRACE_OUT("[%d] %s %lX %lX (%d)", j, rgReaderStates[j].szReader,
+			rgReaderStates[j].dwCurrentState, rgReaderStates[j].dwEventState,
+			rgReaderStates[j].cbAtr)
 	}
 #endif
 
@@ -2171,7 +2257,7 @@ error:
  * @ingroup API
  * @param[in] hCard Connection made from SCardConnect().
  * @param[in] dwControlCode Control code for the operation.\n
- * <a href="http://anonscm.debian.org/viewvc/pcsclite/trunk/Drivers/ccid/SCARDCONTOL.txt?view=markup">
+ * <a href="https://salsa.debian.org/rousseau/CCID/-/blob/master/SCARDCONTOL.md">
  * Click here</a> for a list of supported commands by some drivers.
  * @param[in] pbSendBuffer Command to send to the reader.
  * @param[in] cbSendLength Length of the command.
@@ -2338,7 +2424,7 @@ end:
  * - \ref SCARD_ATTR_DEVICE_FRIENDLY_NAME
  *   Implemented by pcsc-lite if the IFD Handler (driver) returns \ref
  *   IFD_ERROR_TAG.  pcsc-lite then returns the same reader name as
- *   returned by \ref SCardListReaders().
+ *   returned by SCardListReaders().
  * - \ref SCARD_ATTR_DEVICE_IN_USE
  * - \ref SCARD_ATTR_DEVICE_SYSTEM_NAME
  * - \ref SCARD_ATTR_DEVICE_UNIT
@@ -2384,6 +2470,7 @@ end:
  * @retval SCARD_E_NO_SERVICE The server is not running (\ref SCARD_E_NO_SERVICE)
  * @retval SCARD_E_READER_UNAVAILABLE The reader has been removed (\ref SCARD_E_READER_UNAVAILABLE)
  * @retval SCARD_F_COMM_ERROR An internal communications error has been detected (\ref SCARD_F_COMM_ERROR)
+ * @retval SCARD_E_INVALID_VALUE An invalid value is used for \p hCard (for example the reader is no more present) (\ref SCARD_E_INVALID_VALUE)
  *
  * @code
  * LONG rv;
@@ -2579,7 +2666,7 @@ static LONG SCardGetSetAttrib(SCARDHANDLE hCard, int command, DWORD dwAttrId,
 		if (*pcbAttrLen < scGetSetStruct.cbAttrLen)
 		{
 			/* restrict the value of scGetSetStruct.cbAttrLen to avoid a
-			 * buffer overflow in the memcpy() bellow */
+			 * buffer overflow in the memcpy() below */
 			DWORD correct_value = scGetSetStruct.cbAttrLen;
 			scGetSetStruct.cbAttrLen = *pcbAttrLen;
 			*pcbAttrLen = correct_value;
@@ -2634,7 +2721,7 @@ end:
  * @retval SCARD_E_INSUFFICIENT_BUFFER \p cbRecvLength was not large enough for the card response. The expected size is now in \p cbRecvLength (\ref SCARD_E_INSUFFICIENT_BUFFER)
  * @retval SCARD_E_INVALID_HANDLE Invalid \p hCard handle (\ref SCARD_E_INVALID_HANDLE)
  * @retval SCARD_E_INVALID_PARAMETER \p pbSendBuffer or \p pbRecvBuffer or \p pcbRecvLength or \p pioSendPci is null (\ref SCARD_E_INVALID_PARAMETER)
- * @retval SCARD_E_INVALID_VALUE Invalid Protocol, reader name, etc (\ref SCARD_E_INVALID_VALUE)
+ * @retval SCARD_E_INVALID_VALUE Invalid \p hCard, Protocol, reader name, etc (\ref SCARD_E_INVALID_VALUE)
  * @retval SCARD_E_NO_SERVICE The server is not running (\ref SCARD_E_NO_SERVICE)
  * @retval SCARD_E_NOT_TRANSACTED APDU exchange not successful (\ref SCARD_E_NOT_TRANSACTED)
  * @retval SCARD_E_PROTO_MISMATCH Connect protocol is different than desired (\ref SCARD_E_PROTO_MISMATCH)
@@ -2793,6 +2880,10 @@ end:
  * Encoding:
  * The reader names and group names are encoded using UTF-8.
  *
+ * The reader names is a multi-string and separated by a null character
+ * (\c '\0') and ended by a double null character like
+ * \c "Reader foo 00 00\0Reader bar 01 00\0\0".
+ *
  * @ingroup API
  * @param[in] hContext Connection context to the PC/SC Resource Manager.
  * @param[in] mszGroups List of groups to list readers (not used).
@@ -2870,6 +2961,9 @@ LONG SCardListReaders(SCARDCONTEXT hContext, /*@unused@*/ LPCSTR mszGroups,
 		return SCARD_E_INVALID_HANDLE;
 	}
 
+	/* lock access to readerStates[] */
+	(void)pthread_mutex_lock(&readerStatesMutex);
+
 	/* synchronize reader states with daemon */
 	rv = getReaderStates(currentContextMap);
 	if (rv != SCARD_S_SUCCESS)
@@ -2937,6 +3031,7 @@ end:
 	*pcchReaders = dwReadersLen;
 
 	(void)pthread_mutex_unlock(&currentContextMap->mMutex);
+	(void)pthread_mutex_unlock(&readerStatesMutex);
 
 	PROFILE_END(rv)
 	API_TRACE_OUT("%d", *pcchReaders)
@@ -3087,8 +3182,8 @@ end:
 }
 
 /**
- * Cancels a specific blocking \ref SCardGetStatusChange() function.
- * MUST be called with the same \ref SCARDCONTEXT as \ref
+ * Cancels a specific blocking SCardGetStatusChange() function.
+ * MUST be called with the same \ref SCARDCONTEXT as
  * SCardGetStatusChange().
  *
  * @ingroup API
@@ -3123,7 +3218,7 @@ LONG SCardCancel(SCARDCONTEXT hContext)
 	LONG rv = SCARD_S_SUCCESS;
 	uint32_t dwClientID = 0;
 	struct cancel_struct scCancelStruct;
-	char cancellable;
+	bool cancellable;
 
 	PROFILE_START
 	API_TRACE_IN("%ld", hContext)
@@ -3256,7 +3351,7 @@ static LONG SCardAddContext(SCARDCONTEXT hContext, DWORD dwClientID)
 	Log2(PCSC_LOG_DEBUG, "Allocating new SCONTEXTMAP @%p", newContextMap);
 	newContextMap->hContext = hContext;
 	newContextMap->dwClientID = dwClientID;
-	newContextMap->cancellable = FALSE;
+	newContextMap->cancellable = false;
 
 	(void)pthread_mutex_init(&newContextMap->mMutex, NULL);
 
@@ -3277,7 +3372,9 @@ static LONG SCardAddContext(SCARDCONTEXT hContext, DWORD dwClientID)
 		goto error;
 	}
 
+	(void)pthread_mutex_lock(&contextMapList_lock);
 	lrv = list_append(&contextMapList, newContextMap);
+	(void)pthread_mutex_unlock(&contextMapList_lock);
 	if (lrv < 0)
 	{
 		Log2(PCSC_LOG_CRITICAL, "list_append failed with return value: %d",
@@ -3342,7 +3439,13 @@ static SCONTEXTMAP * SCardGetAndLockContext(SCARDCONTEXT hContext)
  */
 static SCONTEXTMAP * SCardGetContextTH(SCARDCONTEXT hContext)
 {
-	return list_seek(&contextMapList, &hContext);
+	SCONTEXTMAP * currentContextMap;
+
+	(void)pthread_mutex_lock(&contextMapList_lock);
+	currentContextMap = list_seek(&contextMapList, &hContext);
+	(void)pthread_mutex_unlock(&contextMapList_lock);
+
+	return currentContextMap;
 }
 
 /**
@@ -3391,7 +3494,9 @@ static void SCardCleanContext(SCONTEXTMAP * targetContextMap)
 	}
 	list_destroy(&targetContextMap->channelMapList);
 
+	(void)pthread_mutex_lock(&contextMapList_lock);
 	lrv = list_delete(&contextMapList, targetContextMap);
+	(void)pthread_mutex_unlock(&contextMapList_lock);
 	if (lrv < 0)
 	{
 		Log2(PCSC_LOG_CRITICAL,
@@ -3482,6 +3587,7 @@ static LONG SCardGetContextChannelAndLockFromHandle(SCARDHANDLE hCard,
 static LONG SCardGetContextAndChannelFromHandleTH(SCARDHANDLE hCard,
 	SCONTEXTMAP **targetContextMap, CHANNEL_MAP ** targetChannelMap)
 {
+	LONG rv = -1;
 	int listSize;
 	int list_index;
 	SCONTEXTMAP * currentContextMap;
@@ -3491,6 +3597,7 @@ static LONG SCardGetContextAndChannelFromHandleTH(SCARDHANDLE hCard,
 	*targetContextMap = NULL;
 	*targetChannelMap = NULL;
 
+	(void)pthread_mutex_lock(&contextMapList_lock);
 	listSize = list_size(&contextMapList);
 
 	for (list_index = 0; list_index < listSize; list_index++)
@@ -3508,11 +3615,14 @@ static LONG SCardGetContextAndChannelFromHandleTH(SCARDHANDLE hCard,
 		{
 			*targetContextMap = currentContextMap;
 			*targetChannelMap = currentChannelMap;
-			return SCARD_S_SUCCESS;
+			rv = SCARD_S_SUCCESS;
+			break;
 		}
 	}
 
-	return -1;
+	(void)pthread_mutex_unlock(&contextMapList_lock);
+
+	return rv;
 }
 
 /**
@@ -3537,6 +3647,30 @@ LONG SCardCheckDaemonAvailability(void)
 			socketName, strerror(errno));
 		return SCARD_E_NO_SERVICE;
 	}
+
+	return SCARD_S_SUCCESS;
+}
+
+static LONG getReaderEvents(SCONTEXTMAP * currentContextMap, int *readerEvents)
+{
+	int32_t dwClientID = currentContextMap->dwClientID;
+	LONG rv;
+	struct get_reader_events get_reader_events = {0};
+
+	/* CMD_GET_READER_EVENTS was added in protocol 4:5 */
+	if (Protocol_version < 4005)
+		return SCARD_E_UNSUPPORTED_FEATURE;
+
+	rv = MessageSendWithHeader(CMD_GET_READER_EVENTS, dwClientID, 0, NULL);
+	if (rv != SCARD_S_SUCCESS)
+		return rv;
+
+	/* Read a message from the server */
+	rv = MessageReceive(&get_reader_events, sizeof(get_reader_events), dwClientID);
+	if (rv != SCARD_S_SUCCESS)
+		return rv;
+
+	*readerEvents = get_reader_events.readerEvents;
 
 	return SCARD_S_SUCCESS;
 }

@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2000-2002
  *  David Corcoran <corcoran@musclecard.com>
- * Copyright (C) 2002-2011
+ * Copyright (C) 2002-2023
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -77,7 +77,7 @@ LONG EHRegisterClientForEvent(int32_t filedes)
 } /* EHRegisterClientForEvent */
 
 /**
- * Try to unregisted a client
+ * Try to unregister a client
  * If no client is found then do not log an error
  */
 LONG EHTryToUnregisterClientForEvent(int32_t filedes)
@@ -179,14 +179,12 @@ void EHDestroyEventHandler(READER_CONTEXT * rContext)
 	rv = IFDGetCapabilities(rContext, TAG_IFD_POLLING_THREAD_KILLABLE,
 		&dwGetSize, ucGetData);
 
-#ifdef HAVE_PTHREAD_CANCEL
 	if ((IFD_SUCCESS == rv) && (1 == dwGetSize) && ucGetData[0])
 	{
 		Log1(PCSC_LOG_INFO, "Killing polling thread");
 		(void)pthread_cancel(rContext->pthThread);
 	}
 	else
-#endif
 	{
 		/* ask to stop the "polling" thread */
 		RESPONSECODE (*fct)(DWORD) = NULL;

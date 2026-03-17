@@ -3,7 +3,7 @@
  *
  * Copyright (C) 1999-2004
  *  David Corcoran <corcoran@musclecard.com>
- * Copyright (C) 2002-2011
+ * Copyright (C) 2002-2023
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -71,7 +71,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
  * @section Internals
  *
- * PC/SC Lite is formed by a server deamon (<tt>pcscd</tt>) and a client
+ * PC/SC Lite is formed by a server daemon (<tt>pcscd</tt>) and a client
  * library (<tt>libpcsclite.so</tt>) that communicate via IPC.
  *
  * The file \em winscard_clnt.c in the client-side exposes the API for
@@ -122,11 +122,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #undef DO_PROFILE
 #ifdef DO_PROFILE
 
-#ifndef FALSE
-#define FALSE 0
-#define TRUE 1
-#endif
-
 #define PROFILE_FILE "/tmp/pcscd_profile"
 #include <stdio.h>
 #include <sys/time.h>
@@ -135,18 +130,18 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 struct timeval profile_time_start;
 FILE *fd;
-char profile_tty;
+bool profile_tty;
 
 #define PROFILE_START profile_start(__FUNCTION__);
 #define PROFILE_END profile_end(__FUNCTION__, __LINE__);
 
 static void profile_start(const char *f)
 {
-	static char initialized = FALSE;
+	static bool initialized = false;
 
 	if (!initialized)
 	{
-		initialized = TRUE;
+		initialized = true;
 		fd = fopen(PROFILE_FILE, "a+");
 		if (NULL == fd)
 		{
@@ -158,9 +153,9 @@ static void profile_start(const char *f)
 		fflush(fd);
 
 		if (isatty(fileno(stderr)))
-			profile_tty = TRUE;
+			profile_tty = true;
 		else
-			profile_tty = FALSE;
+			profile_tty = false;
 	}
 
 	gettimeofday(&profile_time_start, NULL);
@@ -383,6 +378,9 @@ LONG SCardConnect(/*@unused@*/ SCARDCONTEXT hContext, LPCSTR szReader,
 				if (dwPreferredProtocols & SCARD_PROTOCOL_ANY_OLD)
 					dwPreferredProtocols = SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1;
 
+				/* restrict to the protocols requested by the user */
+				availableProtocols &= dwPreferredProtocols;
+
 				ret = PHSetProtocol(rContext, dwPreferredProtocols,
 					availableProtocols, defaultProtocol);
 
@@ -447,7 +445,7 @@ LONG SCardConnect(/*@unused@*/ SCARDCONTEXT hContext, LPCSTR szReader,
 	 * Prepare the SCARDHANDLE identity
 	 */
 
-	/* we need a lock to avoid concurent generation of handles leading
+	/* we need a lock to avoid concurrent generation of handles leading
 	 * to a possible hCard handle duplication */
 	(void)pthread_mutex_lock(&LockMutex);
 
@@ -679,6 +677,9 @@ LONG SCardReconnect(SCARDHANDLE hCard, DWORD dwShareMode,
 				/* If it is set to ANY let it do any of the protocols */
 				if (dwPreferredProtocols & SCARD_PROTOCOL_ANY_OLD)
 					dwPreferredProtocols = SCARD_PROTOCOL_T0 | SCARD_PROTOCOL_T1;
+
+				/* restrict to the protocols requested by the user */
+				availableProtocols &= dwPreferredProtocols;
 
 				ret = PHSetProtocol(rContext, dwPreferredProtocols,
 					availableProtocols, defaultProtocol);
@@ -945,7 +946,7 @@ LONG SCardDisconnect(SCARDHANDLE hCard, DWORD dwDisposition)
 	else if (dwDisposition == SCARD_EJECT_CARD)
 	{
 		UCHAR controlBuffer[5];
-		UCHAR receiveBuffer[MAX_BUFFER_SIZE];
+		UCHAR receiveBuffer[MAX_BUFFER_SIZE] = { 0 };
 		DWORD receiveLength;
 
 		/*

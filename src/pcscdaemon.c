@@ -3,7 +3,7 @@
  *
  * Copyright (C) 1999-2002
  *  David Corcoran <corcoran@musclecard.com>
- * Copyright (C) 2002-2022
+ * Copyright (C) 2002-2026
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -35,7 +35,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  * @brief This is the main pcscd daemon.
  *
  * The function \c main() starts up the communication environment.\n
- * Then an endless loop is calld to look for Client connections. For each
+ * Then an endless loop is called to look for Client connections. For each
  * Client connection a call to \c CreateContextThread() is done.
  */
 
@@ -50,9 +50,8 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef HAVE_GETOPT_H
+#include <stdbool.h>
 #include <getopt.h>
-#endif
 #ifdef USE_LIBSYSTEMD
 #include <systemd/sd-daemon.h>
 #endif
@@ -70,21 +69,17 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "utils.h"
 #include "eventhandler.h"
 
-#ifndef TRUE
-#define TRUE 1
-#define FALSE 0
-#endif
-
-_Atomic char AraKiri = FALSE;
-static char Init = TRUE;
-char AutoExit = FALSE;
-char SocketActivated = FALSE;
+_Atomic bool AraKiri = false;
+static bool Init = true;
+bool AutoExit = false;
+bool SocketActivated = false;
 static int ExitValue = EXIT_FAILURE;
 int HPForceReaderPolling = 0;
+bool disable_polkit = false;
 static int pipefd[] = {-1, -1};
 static int signal_handler_fd[] = {-1, -1};
-char Add_Serial_In_Name = TRUE;
-char Add_Interface_In_Name = TRUE;
+bool Add_Serial_In_Name = true;
+bool Add_Interface_In_Name = true;
 
 /*
  * Some internal functions
@@ -109,7 +104,7 @@ static void SVCServiceRunLoop(void)
 	LONG rv;
 	uint32_t dwClientID = 0;	/* Connection ID used to reference the Client */
 
-	while (TRUE)
+	while (true)
 	{
 		if (AraKiri)
 		{
@@ -119,10 +114,12 @@ static void SVCServiceRunLoop(void)
 #endif
 			(void)SYS_Sleep(1);
 
+			/* stop all the clients */
+			ContextsDeinitialize();
+
 			/* now stop all the drivers */
 			RFCleanupReaders();
 			EHDeinitializeEventStructures();
-			ContextsDeinitialize();
 			at_exit();
 		}
 
@@ -178,9 +175,9 @@ static void *signal_thread(void *arg)
 {
 	(void)arg;
 
-	while (TRUE)
+	while (true)
 	{
-		int r;
+		ssize_t r;
 		int sig;
 
 		r = read(signal_handler_fd[0], &sig, sizeof sig);
@@ -199,7 +196,7 @@ static void *signal_thread(void *arg)
 			if (! AraKiri)
 				HPReCheckSerialReaders();
 #endif
-			/* Reenable the signal handler.
+			/* Re-enable the signal handler.
 			 * This is needed on Solaris and HPUX. */
 			(void)signal(SIGUSR1, signal_trap);
 
@@ -222,10 +219,10 @@ static void *signal_thread(void *arg)
 		}
 
 		/* the signal handler is called several times for the same Ctrl-C */
-		if (AraKiri == FALSE)
+		if (AraKiri == false)
 		{
 			Log1(PCSC_LOG_INFO, "Preparing for suicide");
-			AraKiri = TRUE;
+			AraKiri = true;
 
 			/* if still in the init/loading phase the AraKiri will not be
 			 * seen by the main event loop
@@ -258,8 +255,8 @@ static void *signal_thread(void *arg)
 int main(int argc, char **argv)
 {
 	int rv;
-	char setToForeground;
-	char HotPlug;
+	bool setToForeground;
+	bool HotPlug;
 #ifdef USE_SERIAL
 	char *newReaderConfig = NULL;
 #endif
@@ -290,13 +287,14 @@ int main(int argc, char **argv)
 		{"auto-exit", 0, NULL, 'x'},
 		{"reader-name-no-serial", 0, NULL, 'S'},
 		{"reader-name-no-interface", 0, NULL, 'I'},
+		{"disable-polkit", 0, NULL, 1},
 		{NULL, 0, NULL, 0}
 	};
 #endif
 #define OPT_STRING "c:fTdhvaieCHt:r:s:xSI"
 
-	setToForeground = FALSE;
-	HotPlug = FALSE;
+	setToForeground = false;
+	HotPlug = false;
 
 	/*
 	 * test the version
@@ -335,6 +333,11 @@ int main(int argc, char **argv)
 					"force-reader-polling") == 0)
 					HPForceReaderPolling = optarg ? abs(atoi(optarg)) : 1;
 				break;
+			case 1:
+				if (strcmp(long_options[option_index].name,
+					"disable-polkit") == 0)
+					disable_polkit = true;
+				break;
 #endif
 #ifdef USE_SERIAL
 			case 'c':
@@ -344,7 +347,7 @@ int main(int argc, char **argv)
 #endif
 
 			case 'f':
-				setToForeground = TRUE;
+				setToForeground = true;
 				/* debug to stdout instead of default syslog */
 				DebugLogSetLogType(DEBUGLOG_STDOUT_DEBUG);
 				Log1(PCSC_LOG_INFO,
@@ -387,7 +390,7 @@ int main(int argc, char **argv)
 			case 'H':
 				/* debug to stdout instead of default syslog */
 				DebugLogSetLogType(DEBUGLOG_STDOUT_DEBUG);
-				HotPlug = TRUE;
+				HotPlug = true;
 				break;
 
 			case 't':
@@ -409,17 +412,17 @@ int main(int argc, char **argv)
 				break;
 
 			case 'x':
-				AutoExit = TRUE;
+				AutoExit = true;
 				Log2(PCSC_LOG_INFO, "Auto exit after %d seconds of inactivity",
 					TIME_BEFORE_SUICIDE);
 				break;
 
 			case 'S':
-				Add_Serial_In_Name = FALSE;
+				Add_Serial_In_Name = false;
 				break;
 
 			case 'I':
-				Add_Interface_In_Name = FALSE;
+				Add_Interface_In_Name = false;
 				break;
 
 			default:
@@ -450,11 +453,11 @@ int main(int argc, char **argv)
 	{
 		if (rv == 1)
 		{
-			SocketActivated = TRUE;
+			SocketActivated = true;
 			Log1(PCSC_LOG_INFO, "Started by systemd");
 		}
 		else
-			SocketActivated = FALSE;
+			SocketActivated = false;
 	}
 #endif
 
@@ -566,7 +569,7 @@ int main(int argc, char **argv)
 		/* in the father */
 		{
 			char buf;
-			int ret;
+			ssize_t ret;
 
 			/* close write side */
 			close(pipefd[1]);
@@ -630,7 +633,7 @@ int main(int argc, char **argv)
 
 		/* set mode so that the directory is world readable and
 		 * executable even is umask is restrictive
-		 * The directory containes files used by libpcsclite */
+		 * The directory contains files used by libpcsclite */
 		(void)chmod(PCSCLITE_IPC_DIR, mode);
 	}
 
@@ -705,7 +708,7 @@ int main(int argc, char **argv)
 	/*
 	 * post initialization
 	 */
-	Init = FALSE;
+	Init = false;
 
 	/*
 	 * Hotplug rescan
@@ -743,19 +746,20 @@ int main(int argc, char **argv)
 	(void)signal(SIGHUP, SIG_IGN);	/* needed for Solaris. The signal is sent
 				 * when the shell is exited */
 
+	const char *hpDirPath = SYS_GetEnv("PCSCLITE_HP_DROPDIR");
+	if (NULL == hpDirPath)
+		hpDirPath = PCSCLITE_HP_DROPDIR;
+	Log2(PCSC_LOG_INFO, "Using drivers directory: %s", hpDirPath);
+
 #if !defined(PCSCLITE_STATIC_DRIVER) && defined(USE_USB)
 	/*
 	 * Set up the search for USB/PCMCIA devices
 	 */
-	rv = HPSearchHotPluggables();
-#ifndef USE_SERIAL
+	rv = HPSearchHotPluggables(hpDirPath);
 	if (rv)
 		at_exit();
-#else
-	(void)rv;
-#endif
 
-	rv = HPRegisterForHotplugEvents();
+	rv = HPRegisterForHotplugEvents(hpDirPath);
 	if (rv)
 	{
 		Log1(PCSC_LOG_ERROR, "HPRegisterForHotplugEvents failed");
@@ -838,7 +842,7 @@ static void clean_temp_files(void)
 
 static void signal_trap(int sig)
 {
-	int r;
+	ssize_t r;
 
 	r = write(signal_handler_fd[1], &sig, sizeof sig);
 	if (r < 0)
@@ -847,13 +851,13 @@ static void signal_trap(int sig)
 
 static void print_version(void)
 {
-	printf("%s version %s.\n",  PACKAGE, VERSION);
+	printf("pcsc-lite version " VERSION "\n");
 	printf("Copyright (C) 1999-2002 by David Corcoran <corcoran@musclecard.com>.\n");
-	printf("Copyright (C) 2001-2022 by Ludovic Rousseau <ludovic.rousseau@free.fr>.\n");
+	printf("Copyright (C) 2001-2024 by Ludovic Rousseau <ludovic.rousseau@free.fr>.\n");
 	printf("Copyright (C) 2003-2004 by Damien Sauveron <sauveron@labri.fr>.\n");
 	printf("Report bugs to <pcsclite-muscle@lists.infradead.org>.\n");
 
-	printf("Enabled features:%s\n", PCSCLITE_FEATURES);
+	printf("Enabled features: " PCSCLITE_FEATURES "\n");
 	printf("MAX_READERNAME: %d, PCSCLITE_MAX_READERS_CONTEXTS: %d\n",
 		MAX_READERNAME, PCSCLITE_MAX_READERS_CONTEXTS);
 }
@@ -884,6 +888,7 @@ static void print_usage(char const * const progname)
 	printf("  -x, --auto-exit	pcscd will quit after %d seconds of inactivity\n", TIME_BEFORE_SUICIDE);
 	printf("  -S, --reader-name-no-serial    do not include the USB serial number in the name\n");
 	printf("  -I, --reader-name-no-interface do not include the USB interface name in the name\n");
+	printf("  --disable-polkit	disable polkit support\n");
 #else
 	printf("  -a    log APDU commands and results\n");
 #ifdef USE_SERIAL

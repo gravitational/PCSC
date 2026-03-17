@@ -1,16 +1,21 @@
 #!/bin/sh
 
 set -x
+set -e
 
-./configure \
-        --enable-strict \
-        --prefix=/usr \
-        --sysconfdir=/etc \
-        --enable-maintainer-mode \
-        --enable-twinserial \
-        --with-systemdsystemunitdir=/usr/lib/systemd/system \
-        --enable-usbdropdir=/usr/lib/pcsc/drivers \
-        --enable-ipcdir=/run/pcscd \
-        --libdir=/usr/lib/x86_64-linux-gnu \
-        CFLAGS="$CFLAGS" \
-        "$@"
+BUILD_DIR=builddir
+TMP_DIR=/tmp/pcsc
+
+rm -rf "$BUILD_DIR"
+
+meson setup "$BUILD_DIR" \
+	--prefix /usr \
+	-Dsystemdunit=system \
+	"$@"
+
+cd "$BUILD_DIR"
+meson compile
+
+rm -rf "$TMP_DIR"
+DESTDIR="$TMP_DIR" meson install
+find "$TMP_DIR"

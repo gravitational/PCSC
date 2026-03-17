@@ -1,4 +1,4 @@
-name: build
+name: build_meson
 
 # Controls when the action will run. Triggers the workflow on push or pull request
 # events but only for the master branch
@@ -10,17 +10,6 @@ jobs:
   # This workflow contains a single job called "build"
   build:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        configure_args: [
-          "",
-          "--enable-strict",
-          "--enable-strict --disable-libudev",
-          "--enable-strict --disable-libudev --disable-libusb",
-          "--enable-strict --enable-embedded",
-          "--enable-strict --enable-debugatr",
-        ]
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
@@ -35,22 +24,36 @@ jobs:
           sudo apt install \
             autoconf-archive \
             debhelper-compat \
+            doxygen \
             dpkg-dev \
             flex \
+            libpolkit-gobject-1-dev \
             libsystemd-dev \
             libudev-dev \
             libusb-1.0-0-dev \
+            meson \
             pkg-config
 
       - name: compile
         shell: bash
         run: |
-          ./bootstrap
           export CFLAGS="-Wall -Wextra -Wformat -Wformat-security -Wmissing-declarations -Wmissing-prototypes -Wold-style-definition -Wpointer-arith -Wredundant-decls -Wshadow -Wstrict-prototypes -Wswitch-enum -Wundef -Wuninitialized -Wunused -Wwrite-strings -Wmissing-noreturn -flto=auto -O2"
-          ./configure --disable-polkit ${{ matrix.configure_args }}
-          make V=1
+          meson setup builddir --werror
+          cd builddir
 
-      - name: distcheck
-        shell: bash
-        run: |
-          AM_DISTCHECK_CONFIGURE_FLAGS=--disable-polkit make distcheck
+          DESTDIR=/tmp/pcsc meson install
+          find /tmp/pcsc
+
+          meson dist
+
+          # doxygen
+          meson compile doc
+
+          meson setup --reconfigure -Dlibsystemd=false -Dlibudev=false -Dpolkit=false
+          meson compile
+
+          meson setup --reconfigure -Dserial=true
+          meson compile
+
+          meson setup --reconfigure -Dembedded=true
+          meson compile

@@ -3,7 +3,7 @@
  *
  * Copyright (C) 1999
  *  David Corcoran <corcoran@musclecard.com>
- * Copyright (C) 2004-2010
+ * Copyright (C) 2004-2022
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -76,10 +76,10 @@ static void test_rv(LONG rv, SCARDCONTEXT hContext, int dont_panic)
 int main(/*@unused@*/ int argc, /*@unused@*/ char **argv)
 {
 	SCARDHANDLE hCard;
-	SCARDCONTEXT hContext;
+	SCARDCONTEXT hContext = -1;
 	SCARD_READERSTATE rgReaderStates[1];
 	DWORD dwReaderLen, dwState, dwProt, dwAtrLen;
-	DWORD dwPref, dwReaders = 0;
+	DWORD dwPref = -1, dwReaders = 0;
 	char *pcReader = NULL, *mszReaders;
 #ifdef USE_AUTOALLOCATE
 	unsigned char *pbAtr = NULL;
@@ -94,7 +94,7 @@ int main(/*@unused@*/ int argc, /*@unused@*/ char **argv)
 	DWORD dwBufLen;
 	unsigned char *pbAttr = NULL;
 	DWORD pcbAttrLen;
-	char *mszGroups;
+	char *mszGroups = NULL;
 	DWORD dwGroups = 0;
 	long rv;
 	DWORD i;
@@ -188,7 +188,7 @@ wait_for_card_again:
 	mszReaders = calloc(dwReaders, sizeof(char));
 	rv = SCardListReaders(hContext, mszGroups, mszReaders, &dwReaders);
 #endif
-	test_rv(rv, hContext, DONT_PANIC);
+	test_rv(rv, hContext, PANIC);
 
 	/*
 	 * Have to understand the multi-string here
@@ -283,14 +283,6 @@ wait_for_card_again:
 	printf("\n" NORMAL);
 
 	printf("Testing SCardControl\t\t: ");
-#ifdef PCSC_PRE_120
-	{
-		char buffer[1024] = "Foobar";
-		DWORD cbRecvLength = sizeof(buffer);
-
-		rv = SCardControl(hCard, buffer, 7, buffer, &cbRecvLength);
-	}
-#else
 	{
 		char buffer[1024] = { 0x02 };
 		DWORD cbRecvLength = sizeof(buffer);
@@ -304,7 +296,6 @@ wait_for_card_again:
 			printf(" ");
 		}
 	}
-#endif
 	test_rv(rv, hContext, DONT_PANIC);
 
 	printf("Testing SCardGetAttrib\t\t: ");

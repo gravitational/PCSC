@@ -5,7 +5,7 @@
  *
  * Copyright (C) 1999
  *  David Corcoran <corcoran@musclecard.com>
- * Copyright (C) 2002-2010
+ * Copyright (C) 2002-2024
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  *
 Redistribution and use in source and binary forms, with or without
@@ -38,6 +38,7 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 #include "config.h"
+#define _GNU_SOURCE /* for secure_getenv(3) */
 #include <sys/time.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -47,10 +48,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endif /* HAVE_GETRANDOM */
 #include <errno.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "misc.h"
 #include "sys_generic.h"
-#include "PCSC/debuglog.h"
+#include "debuglog.h"
 
 /**
  * @brief Makes the current process sleep for some seconds.
@@ -114,7 +116,9 @@ INTERNAL int SYS_RandomInt(void)
 	ret = getrandom(c, sizeof c, 0);
 	if (-1 == ret)
 	{
+#ifdef PCSCD
 		Log2(PCSC_LOG_ERROR, "getrandom() failed: %s", strerror(errno));
+#endif
 		return lrand48();
 	}
 	// this loop avoids trap representations that may occur in the naive solution
@@ -125,7 +129,7 @@ INTERNAL int SYS_RandomInt(void)
 	// the casts are for the sake of clarity
 	return (int)(ui & (unsigned int)INT_MAX);
 #else
-	int r = lrand48(); // this is not thread-safe
+	int r = (int)lrand48(); // this is not thread-safe
 	return r;
 #endif /* HAVE_GETRANDOM */
 }
@@ -152,5 +156,25 @@ INTERNAL void SYS_InitRandom(void)
 
 	srand48(myseed);
 #endif /* HAVE_GETRANDOM */
+}
+
+/**
+ * (More) secure version of getenv(3)
+ *
+ * @param[in] name variable environment name
+ *
+ * @return value of the environment variable called "name"
+ */
+INTERNAL const char * SYS_GetEnv(const char *name)
+{
+#ifdef HAVE_SECURE_GETENV
+	return secure_getenv(name);
+#else
+	/* Otherwise, make sure current process is not tainted by uid or gid
+	 * changes */
+	if (issetugid())
+		return NULL;
+	return getenv(name);
+#endif
 }
 

@@ -3,7 +3,7 @@
  *
  * Copyright (C) 2002-2004
  *  Stephen M. Webb <stephenw@cryptocard.com>
- * Copyright (C) 2002-2011
+ * Copyright (C) 2002-2023
  *  Ludovic Rousseau <ludovic.rousseau@free.fr>
  * Copyright (C) 2002
  *  David Corcoran <corcoran@musclecard.com>
@@ -97,13 +97,12 @@ static HPDriver *Drivers = NULL;
  */
 static void HPDeviceAppeared(void *refCon, io_iterator_t iterator)
 {
-	kern_return_t kret;
 	io_service_t obj;
 
 	(void)refCon;
 
 	while ((obj = IOIteratorNext(iterator)))
-		kret = IOObjectRelease(obj);
+		IOObjectRelease(obj);
 
 	HPScan();
 }
@@ -114,13 +113,12 @@ static void HPDeviceAppeared(void *refCon, io_iterator_t iterator)
  */
 static void HPDeviceDisappeared(void *refCon, io_iterator_t iterator)
 {
-	kern_return_t kret;
 	io_service_t obj;
 
 	(void)refCon;
 
 	while ((obj = IOIteratorNext(iterator)))
-		kret = IOObjectRelease(obj);
+		IOObjectRelease(obj);
 
 	HPScan();
 }
@@ -160,12 +158,12 @@ static HPDriverVector HPDriversGetFromDirectory(const char *driverBundlePath)
 	}
 	bundleArray = CFBundleCreateBundlesFromDirectory(kCFAllocatorDefault,
 		pluginUrl, NULL);
+	CFRelease(pluginUrl);
 	if (!bundleArray)
 	{
 		Log1(PCSC_LOG_ERROR, "error getting plugin directory bundles");
 		return NULL;
 	}
-	CFRelease(pluginUrl);
 
 	size_t bundleArraySize = CFArrayGetCount(bundleArray);
 	size_t i;
@@ -183,6 +181,7 @@ static HPDriverVector HPDriversGetFromDirectory(const char *driverBundlePath)
 		if (!blobValue)
 		{
 			Log1(PCSC_LOG_ERROR, "error getting vendor ID from bundle");
+			CFRelease(bundleArray);
 			return NULL;
 		}
 
@@ -209,6 +208,7 @@ static HPDriverVector HPDriversGetFromDirectory(const char *driverBundlePath)
 	if (!bundleVector)
 	{
 		Log1(PCSC_LOG_ERROR, "memory allocation failure");
+		CFRelease(bundleArray);
 		return NULL;
 	}
 
@@ -221,9 +221,11 @@ static HPDriverVector HPDriversGetFromDirectory(const char *driverBundlePath)
 
 		CFURLRef bundleUrl = CFBundleCopyBundleURL(currBundle);
 		CFStringRef bundlePath = CFURLCopyPath(bundleUrl);
+		CFRelease(bundleUrl);
 
 		driverBundle->m_libPath = strdup(CFStringGetCStringPtr(bundlePath,
 				CFStringGetSystemEncoding()));
+		CFRelease(bundlePath);
 
 		const void * blobValue = CFDictionaryGetValue(dict,
 			CFSTR(PCSCLITE_HP_MANUKEY_NAME));
@@ -231,6 +233,7 @@ static HPDriverVector HPDriversGetFromDirectory(const char *driverBundlePath)
 		if (!blobValue)
 		{
 			Log1(PCSC_LOG_ERROR, "error getting vendor ID from bundle");
+			CFRelease(bundleArray);
 			return bundleVector;
 		}
 
@@ -250,6 +253,7 @@ static HPDriverVector HPDriversGetFromDirectory(const char *driverBundlePath)
 			if (!productArray)
 			{
 				Log1(PCSC_LOG_ERROR, "error getting product ID from bundle");
+				CFRelease(bundleArray);
 				return bundleVector;
 			}
 
@@ -259,53 +263,49 @@ static HPDriverVector HPDriversGetFromDirectory(const char *driverBundlePath)
 			if (!friendlyNameArray)
 			{
 				Log1(PCSC_LOG_ERROR, "error getting product ID from bundle");
+				CFRelease(bundleArray);
 				return bundleVector;
 			}
 
-			int reader_nb = CFArrayGetCount(vendorArray);
+			long reader_nb = CFArrayGetCount(vendorArray);
 
 			if (reader_nb != CFArrayGetCount(productArray))
 			{
 				Log3(PCSC_LOG_ERROR,
-					"Malformed Info.plist: %d vendors and %ld products",
+					"Malformed Info.plist: %ld vendors and %ld products",
 					reader_nb, CFArrayGetCount(productArray));
+				CFRelease(bundleArray);
 				return bundleVector;
 			}
 
 			if (reader_nb != CFArrayGetCount(friendlyNameArray))
 			{
 				Log3(PCSC_LOG_ERROR,
-					"Malformed Info.plist: %d vendors and %ld friendlynames",
+					"Malformed Info.plist: %ld vendors and %ld friendlynames",
 					reader_nb, CFArrayGetCount(friendlyNameArray));
+				CFRelease(bundleArray);
 				return bundleVector;
 			}
 
 			int j;
 			for (j=0; j<reader_nb; j++)
 			{
+				char stringBuffer[1000];
 				CFStringRef strValue = CFArrayGetValueAtIndex(vendorArray, j);
 
-				driverBundle->m_vendorId = strtoul(CFStringGetCStringPtr(strValue,
-					CFStringGetSystemEncoding()), NULL, 16);
+				CFStringGetCString(strValue, stringBuffer, sizeof stringBuffer,
+					kCFStringEncodingUTF8);
+				driverBundle->m_vendorId = (unsigned int)strtoul(stringBuffer, NULL, 16);
 
 				strValue = CFArrayGetValueAtIndex(productArray, j);
-				driverBundle->m_productId = strtoul(CFStringGetCStringPtr(strValue,
-					CFStringGetSystemEncoding()), NULL, 16);
+				CFStringGetCString(strValue, stringBuffer, sizeof stringBuffer,
+					kCFStringEncodingUTF8);
+				driverBundle->m_productId = (unsigned int)strtoul(stringBuffer, NULL, 16);
 
 				strValue = CFArrayGetValueAtIndex(friendlyNameArray, j);
-				const char *cstr = CFStringGetCStringPtr(strValue,
-					CFStringGetSystemEncoding());
-				if (NULL == cstr)
-				{
-					char utf8_str[200];
-					if (CFStringGetCString(strValue, utf8_str, sizeof utf8_str,
-						kCFStringEncodingUTF8))
-						driverBundle->m_friendlyName = strdup(utf8_str);
-					else
-						continue;
-				}
-				else
-					driverBundle->m_friendlyName = strdup(cstr);
+				CFStringGetCString(strValue, stringBuffer, sizeof stringBuffer,
+					kCFStringEncodingUTF8);
+				driverBundle->m_friendlyName = strdup(stringBuffer);
 
 				if (!driverBundle->m_libPath)
 					driverBundle->m_libPath = strdup(libPath);
@@ -326,49 +326,7 @@ static HPDriverVector HPDriversGetFromDirectory(const char *driverBundlePath)
 		}
 		else
 		{
-			CFStringRef strValue = blobValue;
-
-#ifdef DEBUG_HOTPLUG
-			Log3(PCSC_LOG_DEBUG, "Driver without alias: %s %s",
-				driverBundle->m_friendlyName, driverBundle->m_libPath);
-#endif
-
-			driverBundle->m_vendorId = strtoul(CFStringGetCStringPtr(strValue,
-					CFStringGetSystemEncoding()), NULL, 16);
-
-			strValue = (CFStringRef) CFDictionaryGetValue(dict,
-				CFSTR(PCSCLITE_HP_PRODKEY_NAME));
-			if (!strValue)
-			{
-				Log1(PCSC_LOG_ERROR, "error getting product ID from bundle");
-				return bundleVector;
-			}
-			driverBundle->m_productId = strtoul(CFStringGetCStringPtr(strValue,
-				CFStringGetSystemEncoding()), NULL, 16);
-
-			strValue = (CFStringRef) CFDictionaryGetValue(dict,
-				CFSTR(PCSCLITE_HP_NAMEKEY_NAME));
-			if (!strValue)
-			{
-				Log1(PCSC_LOG_ERROR, "error getting product friendly name from bundle");
-				driverBundle->m_friendlyName = strdup("unnamed device");
-			}
-			else
-			{
-				const char *cstr = CFStringGetCStringPtr(strValue,
-					CFStringGetSystemEncoding());
-
-				driverBundle->m_friendlyName = strdup(cstr);
-			}
-#ifdef DEBUG_HOTPLUG
-			Log2(PCSC_LOG_DEBUG, "VendorID: 0x%04X", driverBundle->m_vendorId);
-			Log2(PCSC_LOG_DEBUG, "ProductID: 0x%04X", driverBundle->m_productId);
-			Log2(PCSC_LOG_DEBUG, "Friendly name: %s", driverBundle->m_friendlyName);
-			Log2(PCSC_LOG_DEBUG, "Driver: %s", driverBundle->m_libPath);
-#endif
-
-			/* go to next bundle in the vector */
-			driverBundle++;
+			Log1(PCSC_LOG_ERROR, "Non array not supported");
 		}
 	}
 	CFRelease(bundleArray);
@@ -468,7 +426,7 @@ HPDriversMatchUSBDevices(HPDriverVector driverBundle,
 	}
 
 	io_iterator_t usbIter;
-	kern_return_t kret = IOServiceGetMatchingServices(kIOMasterPortDefault,
+	kern_return_t kret = IOServiceGetMatchingServices(kIOMainPortDefault,
 		usbMatch, &usbIter);
 
 	if (kret != 0)
@@ -571,7 +529,7 @@ HPDriversMatchPCCardDevices(HPDriver * driverBundle,
 
 	io_iterator_t pccIter;
 	kern_return_t kret =
-		IOServiceGetMatchingServices(kIOMasterPortDefault, pccMatch,
+		IOServiceGetMatchingServices(kIOMainPortDefault, pccMatch,
 		&pccIter);
 	if (kret != 0)
 	{
@@ -608,6 +566,7 @@ HPDriversMatchPCCardDevices(HPDriver * driverBundle,
 		{
 			CFNumberGetValue((CFNumberRef) valueRef, kCFNumberSInt32Type,
 				&vendorId);
+			CFRelease(valueRef);
 		}
 		valueRef =
 			IORegistryEntryCreateCFProperty(pccDevice, CFSTR("DeviceID"),
@@ -620,6 +579,7 @@ HPDriversMatchPCCardDevices(HPDriver * driverBundle,
 		{
 			CFNumberGetValue((CFNumberRef) valueRef, kCFNumberSInt32Type,
 				&productId);
+			CFRelease(valueRef);
 		}
 		valueRef =
 			IORegistryEntryCreateCFProperty(pccDevice, CFSTR("SocketNumber"),
@@ -632,6 +592,7 @@ HPDriversMatchPCCardDevices(HPDriver * driverBundle,
 		{
 			CFNumberGetValue((CFNumberRef) valueRef, kCFNumberSInt32Type,
 				&pccAddress);
+			CFRelease(valueRef);
 		}
 		HPDriver *driver = driverBundle;
 
@@ -658,7 +619,7 @@ static void HPEstablishUSBNotification(void)
 	IONotificationPortRef notificationPort;
 	IOReturn kret;
 
-	notificationPort = IONotificationPortCreate(kIOMasterPortDefault);
+	notificationPort = IONotificationPortCreate(kIOMainPortDefault);
 	CFRunLoopAddSource(CFRunLoopGetCurrent(),
 		IONotificationPortGetRunLoopSource(notificationPort),
 		kCFRunLoopDefaultMode);
@@ -667,6 +628,7 @@ static void HPEstablishUSBNotification(void)
 	if (!matchingDictionary)
 	{
 		Log1(PCSC_LOG_ERROR, "IOServiceMatching() failed");
+		return;
 	}
 	matchingDictionary =
 		(CFMutableDictionaryRef) CFRetain(matchingDictionary);
@@ -701,7 +663,7 @@ static void HPEstablishPCCardNotification(void)
 	IONotificationPortRef notificationPort;
 	IOReturn kret;
 
-	notificationPort = IONotificationPortCreate(kIOMasterPortDefault);
+	notificationPort = IONotificationPortCreate(kIOMainPortDefault);
 	CFRunLoopAddSource(CFRunLoopGetCurrent(),
 		IONotificationPortGetRunLoopSource(notificationPort),
 		kCFRunLoopDefaultMode);
@@ -710,6 +672,7 @@ static void HPEstablishPCCardNotification(void)
 	if (!matchingDictionary)
 	{
 		Log1(PCSC_LOG_ERROR, "IOServiceMatching() failed");
+		return;
 	}
 	matchingDictionary =
 		(CFMutableDictionaryRef) CFRetain(matchingDictionary);
@@ -751,9 +714,9 @@ static void HPDeviceNotificationThread(void)
  * matching devices.
  * Adds or removes matching readers as necessary.
  */
-LONG HPSearchHotPluggables(void)
+LONG HPSearchHotPluggables(const char * hpDirPath)
 {
-	Drivers = HPDriversGetFromDirectory(PCSCLITE_HP_DROPDIR);
+	Drivers = HPDriversGetFromDirectory(hpDirPath);
 
 	if (!Drivers)
 		return 1;
@@ -766,23 +729,33 @@ static int HPScan(void)
 	HPDeviceList devices = NULL;
 
 	if (HPDriversMatchUSBDevices(Drivers, &devices))
+	{
+		if (devices)
+			free(devices);
+
 		return -1;
+	}
 
 	if (HPDriversMatchPCCardDevices(Drivers, &devices))
+	{
+		if (devices)
+			free(devices);
+
 		return -1;
+	}
 
 	HPDevice *a;
 
 	for (a = devices; a; a = a->m_next)
 	{
-		int found = FALSE;
+		bool found = false;
 		HPDevice *b;
 
 		for (b = sDeviceList; b; b = b->m_next)
 		{
 			if (HPDeviceEquals(a, b))
 			{
-				found = TRUE;
+				found = true;
 				break;
 			}
 		}
@@ -803,14 +776,14 @@ static int HPScan(void)
 
 	for (a = sDeviceList; a; a = a->m_next)
 	{
-		int found = FALSE;
+		bool found = false;
 		HPDevice *b;
 
 		for (b = devices; b; b = b->m_next)
 		{
 			if (HPDeviceEquals(a, b))
 			{
-				found = TRUE;
+				found = true;
 				break;
 			}
 		}
@@ -834,8 +807,10 @@ pthread_t sHotplugWatcherThread;
 /*
  * Sets up callbacks for device hotplug events.
  */
-ULONG HPRegisterForHotplugEvents(void)
+ULONG HPRegisterForHotplugEvents(const char * hpDirPath)
 {
+	(void)hpDirPath;
+
 	ThreadCreate(&sHotplugWatcherThread,
 		THREAD_ATTR_DEFAULT,
 		(PCSCLITE_THREAD_FUNCTION( )) HPDeviceNotificationThread, NULL);
