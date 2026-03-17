@@ -202,26 +202,6 @@ if get_option('default_library') != 'static'
     c_args: '-DLIBPCSCLITE -DSIMCLIST_NO_DUMPRESTORE',
     soversion : 1,
     install : true)
-
-  # libpcscspy library
-  library('pcscspy',
-    sources : ['src/spy/libpcscspy.c', 'src/sys_unix.c'],
-    dependencies : [dl_deps, threads_dep],
-    include_directories : incdir,
-    soversion : 0,
-    install : true)
-
-  install_data('src/spy/pcsc-spy',
-    install_dir : get_option('bindir'))
-
-  install_data('src/spy/setup_spy.sh',
-    install_dir : 'share/doc/pcsc-lite')
-
-  run_command('pod2man',
-    ['--date=2024-01-01', 'src/spy/pcsc-spy.pod', 'pcsc-spy.1'],
-    check : true)
-  install_data('pcsc-spy.1',
-    install_dir : join_paths(get_option('mandir'), 'man1'))
 endif
 
 # static library
